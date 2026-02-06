@@ -1,0 +1,363 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+JAILED_VERSION="0.1.0"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# --- Defaults (from env vars) ---
+IMAGE_NAME="${JAILED_IMAGE:-jailed:latest}"
+USERNAME="${JAILED_USER:-coder}"
+SYNC_STRATEGY="${JAILED_SYNC_STRATEGY:-mutagen}"
+CONFIG_DIR="${JAILED_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/jailed}"
+RUNTIME=""
+TESTCONTAINERS=false
+PROJECT_DIR=""
+
+# --- Colors ---
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+info()    { echo -e "${BLUE}[jailed]${NC} $1"; }
+success() { echo -e "${GREEN}[jailed]${NC} $1"; }
+warn()    { echo -e "${YELLOW}[jailed]${NC} $1"; }
+error()   { echo -e "${RED}[jailed]${NC} $1" >&2; }
+die()     { error "$1"; exit 1; }
+
+# --- Runtime detection ---
+# Priority: --runtime flag > JAILED_RUNTIME env > podman in PATH > docker in PATH > error
+detect_runtime() {
+    if [ -n "$RUNTIME" ]; then
+        command -v "$RUNTIME" >/dev/null 2>&1 || die "Runtime '$RUNTIME' not found in PATH"
+        return
+    fi
+
+    if [ -n "${JAILED_RUNTIME:-}" ]; then
+        RUNTIME="$JAILED_RUNTIME"
+        command -v "$RUNTIME" >/dev/null 2>&1 || die "Runtime '$RUNTIME' (from JAILED_RUNTIME) not found in PATH"
+        return
+    fi
+
+    if command -v podman >/dev/null 2>&1; then
+        RUNTIME="podman"
+    elif command -v docker >/dev/null 2>&1; then
+        RUNTIME="docker"
+    else
+        die "Neither 'docker' nor 'podman' found in PATH. Install one and try again."
+    fi
+}
+
+# --- Config directory setup ---
+ensure_config_dirs() {
+    local dirs=(
+        "$CONFIG_DIR/agents/claude"
+        "$CONFIG_DIR/agents/opencode"
+        "$CONFIG_DIR/agents/opencode-data"
+        "$CONFIG_DIR/agents/aider"
+        "$CONFIG_DIR/agents/kimi"
+        "$CONFIG_DIR/agents/gemini"
+        "$CONFIG_DIR/agents/codex"
+        "$CONFIG_DIR/agents/copilot"
+        "$CONFIG_DIR/agents/gh"
+        "$CONFIG_DIR/sessions"
+        "$CONFIG_DIR/cache"
+    )
+    for dir in "${dirs[@]}"; do
+        mkdir -p "$dir"
+    done
+}
+
+# --- Image check ---
+image_exists() {
+    "$RUNTIME" image inspect "$IMAGE_NAME" >/dev/null 2>&1
+}
+
+# --- Build ---
+cmd_build() {
+    local build_username="$USERNAME"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --name) build_username="$2"; shift 2 ;;
+            *) die "Unknown build option: $1" ;;
+        esac
+    done
+
+    info "Building image '$IMAGE_NAME' (username: $build_username)..."
+    "$RUNTIME" build \
+        --build-arg "USERNAME=$build_username" \
+        --build-arg "USER_UID=$(id -u)" \
+        --build-arg "USER_GID=$(id -g)" \
+        -t "$IMAGE_NAME" \
+        "$SCRIPT_DIR"
+    success "Image built successfully."
+}
+
+# --- Mutagen helpers ---
+mutagen_available() {
+    command -v mutagen >/dev/null 2>&1
+}
+
+start_mutagen_sync() {
+    local host_dir="$1"
+    local container_name="$2"
+
+    if ! mutagen_available; then
+        warn "Mutagen not found. Install it for better file sync performance:"
+        warn "  macOS:  brew install mutagen-io/mutagen/mutagen"
+        warn "  Linux:  https://github.com/mutagen-io/mutagen/releases"
+        warn "Falling back to bind mount."
+        SYNC_STRATEGY="bind"
+        return 1
+    fi
+
+    mutagen sync create \
+        --name="jailed-${container_name}" \
+        --sync-mode=two-way-resolved \
+        --ignore=".git" \
+        --default-owner-beta="$USERNAME" \
+        "$host_dir" \
+        "docker://${USERNAME}@${container_name}/workspace"
+
+    info "Mutagen sync started (session: jailed-${container_name})"
+}
+
+stop_mutagen_sync() {
+    local container_name="$1"
+    if mutagen_available; then
+        mutagen sync terminate "jailed-${container_name}" 2>/dev/null || true
+    fi
+}
+
+# --- Build container run arguments ---
+build_run_args() {
+    local project_dir="$1"
+    local container_name="$2"
+    local -n _args=$3
+
+    _args=(
+        run -it --rm
+        --name "$container_name"
+        --hostname "jailed"
+        -e "HOST_UID=$(id -u)"
+        -e "HOST_GID=$(id -g)"
+        -e "JAILED_USER=$USERNAME"
+        -e "TERM=${TERM:-xterm-256color}"
+    )
+
+    # Config bind mounts (all 7 agents + sessions)
+    _args+=(-v "$CONFIG_DIR/agents/claude:/home/$USERNAME/.claude")
+    _args+=(-v "$CONFIG_DIR/agents/opencode:/home/$USERNAME/.config/opencode")
+    _args+=(-v "$CONFIG_DIR/agents/opencode-data:/home/$USERNAME/.local/share/opencode")
+    _args+=(-v "$CONFIG_DIR/agents/aider:/home/$USERNAME/.aider")
+    _args+=(-v "$CONFIG_DIR/agents/kimi:/home/$USERNAME/.kimi")
+    _args+=(-v "$CONFIG_DIR/agents/gemini:/home/$USERNAME/.gemini")
+    _args+=(-v "$CONFIG_DIR/agents/codex:/home/$USERNAME/.codex")
+    _args+=(-v "$CONFIG_DIR/agents/copilot:/home/$USERNAME/.config/github-copilot")
+    _args+=(-v "$CONFIG_DIR/agents/gh:/home/$USERNAME/.config/gh")
+    _args+=(-v "$CONFIG_DIR/sessions:/home/$USERNAME/.jailed-sessions")
+
+    # Project directory mount (only when sync=bind)
+    if [ "$SYNC_STRATEGY" = "bind" ]; then
+        if [ "$RUNTIME" = "podman" ]; then
+            _args+=(-v "${project_dir}:/workspace:z")
+        else
+            _args+=(-v "${project_dir}:/workspace")
+        fi
+    fi
+    # If mutagen, /workspace is synced separately (no bind mount needed)
+
+    # Runtime-specific security flags
+    if [ "$RUNTIME" = "podman" ]; then
+        _args+=(--userns=keep-id)
+    else
+        _args+=(--security-opt no-new-privileges)
+        _args+=(--cap-drop ALL)
+        _args+=(--read-only)
+        _args+=(--tmpfs /tmp)
+        _args+=(--tmpfs /run)
+        _args+=(--tmpfs "/home/$USERNAME/.cache")
+    fi
+
+    # Testcontainers socket mount (opt-in via --testcontainers flag)
+    if [ "$TESTCONTAINERS" = true ]; then
+        local socket_path=""
+        if [ "$RUNTIME" = "podman" ]; then
+            socket_path="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock"
+        else
+            socket_path="/var/run/docker.sock"
+        fi
+
+        if [ -S "$socket_path" ]; then
+            _args+=(-v "${socket_path}:/var/run/docker.sock")
+            _args+=(-e "DOCKER_HOST=unix:///var/run/docker.sock")
+            info "Socket mounted from $socket_path"
+        else
+            warn "Socket not found at $socket_path -- Testcontainers will not work"
+        fi
+    fi
+
+    _args+=("$IMAGE_NAME")
+}
+
+# --- Run command ---
+cmd_run() {
+    PROJECT_DIR="${1:-$(pwd)}"
+    PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd)"
+
+    # First run experience: prompt to build if no image found
+    if ! image_exists; then
+        warn "Image '$IMAGE_NAME' not found."
+        read -rp "Build now? [Y/n] " answer
+        case "${answer:-Y}" in
+            [Yy]*) cmd_build ;;
+            *) die "Cannot run without an image. Run 'jailed build' first." ;;
+        esac
+    fi
+
+    ensure_config_dirs
+
+    # Generate unique container name from project dir + random suffix
+    local dir_name
+    dir_name=$(basename "$PROJECT_DIR")
+    local rand_suffix
+    rand_suffix=$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')
+    local container_name="jailed-${dir_name}-${rand_suffix}"
+
+    # For Podman with mutagen: set DOCKER_HOST to the Podman socket path
+    # so mutagen can use it as a Docker-compatible endpoint
+    if [ "$RUNTIME" = "podman" ] && [ "$SYNC_STRATEGY" = "mutagen" ]; then
+        local podman_socket="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock"
+        if [ -S "$podman_socket" ]; then
+            export DOCKER_HOST="unix://${podman_socket}"
+        fi
+    fi
+
+    local run_args=()
+    build_run_args "$PROJECT_DIR" "$container_name" run_args
+
+    info "Starting jailed container..."
+    info "Project: $PROJECT_DIR"
+    info "Runtime: $RUNTIME"
+    info "Sync: $SYNC_STRATEGY"
+    info "Container: $container_name"
+
+    # Start container
+    if [ "$SYNC_STRATEGY" = "mutagen" ]; then
+        # For mutagen: start container detached, start sync, then attach
+        "$RUNTIME" "${run_args[@]}" -- sleep infinity &
+        local container_pid=$!
+
+        # Wait for container to be running
+        local retries=0
+        while ! "$RUNTIME" inspect "$container_name" >/dev/null 2>&1; do
+            sleep 0.5
+            retries=$((retries + 1))
+            if [ $retries -gt 20 ]; then
+                die "Container failed to start"
+            fi
+        done
+
+        # Start mutagen sync
+        if ! start_mutagen_sync "$PROJECT_DIR" "$container_name"; then
+            # Fallback already handled inside start_mutagen_sync (sets SYNC_STRATEGY=bind)
+            # Need to restart with bind mount
+            "$RUNTIME" stop "$container_name" 2>/dev/null || true
+            wait $container_pid 2>/dev/null || true
+
+            # Re-run with bind mount
+            run_args=()
+            build_run_args "$PROJECT_DIR" "$container_name" run_args
+            "$RUNTIME" "${run_args[@]}"
+        else
+            # Attach to the running container interactively
+            trap 'stop_mutagen_sync "$container_name"' EXIT
+            "$RUNTIME" exec -it "$container_name" gosu "$USERNAME" zsh -l
+            "$RUNTIME" stop "$container_name" 2>/dev/null || true
+        fi
+    else
+        # For bind mount: run directly (interactive)
+        "$RUNTIME" "${run_args[@]}"
+    fi
+}
+
+# --- Help ---
+cmd_help() {
+    cat <<'EOF'
+jailed - Secure AI coding assistant container
+
+Usage:
+  jailed [path]                Start container (default: current directory)
+  jailed build [--name USER]   Build/rebuild the container image
+  jailed version               Show version
+  jailed help                  Show this help
+
+Options:
+  --runtime <docker|podman>    Container runtime (default: auto-detect)
+  --testcontainers             Mount Docker/Podman socket for Testcontainers
+  --sync <mutagen|bind>        Sync strategy (default: mutagen)
+
+Environment Variables:
+  JAILED_RUNTIME               Force container runtime
+  JAILED_IMAGE                 Custom image name (default: jailed:latest)
+  JAILED_USER                  Container username (default: coder)
+  JAILED_CONFIG_DIR            Config directory (default: ~/.config/jailed)
+  JAILED_SYNC_STRATEGY         Sync strategy (default: mutagen)
+
+AI Agents Available Inside Container:
+  claude       Claude Code (Anthropic)
+  opencode     OpenCode
+  aider        Aider (AI pair programming)
+  kimi         Kimi Code CLI
+  gemini       Gemini CLI (Google)
+  codex        Codex CLI (OpenAI)
+  gh copilot   GitHub Copilot CLI
+
+Security:
+  - Non-root user with UID/GID matching host
+  - Only project directory and config dirs accessible
+  - No --privileged flag
+  - Capabilities dropped (Docker)
+  - Read-only root filesystem (Docker)
+  - Rootless mode (Podman)
+EOF
+}
+
+# --- Version ---
+cmd_version() {
+    echo "jailed $JAILED_VERSION"
+}
+
+# --- Main ---
+main() {
+    # Parse global flags before dispatching to subcommands
+    local positional=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --runtime)
+                RUNTIME="$2"; shift 2 ;;
+            --testcontainers)
+                TESTCONTAINERS=true; shift ;;
+            --sync)
+                SYNC_STRATEGY="$2"; shift 2 ;;
+            *)
+                positional+=("$1"); shift ;;
+        esac
+    done
+    set -- "${positional[@]+"${positional[@]}"}"
+
+    detect_runtime
+
+    local command="${1:-}"
+
+    case "$command" in
+        build)   shift; cmd_build "$@" ;;
+        version) cmd_version ;;
+        help|--help|-h) cmd_help ;;
+        *)       cmd_run "$@" ;;
+    esac
+}
+
+main "$@"

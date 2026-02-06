@@ -1,10 +1,40 @@
-# jailed
+<p align="center">
+  <img src="docs/images/logo.jpeg" alt="jailed logo" width="180" style="border-radius: 24px;">
+</p>
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-linux%20%7C%20macOS%20%7C%20WSL2-lightgrey.svg)]()
-[![Runtime](https://img.shields.io/badge/runtime-Docker%20%7C%20Podman-blue.svg)]()
+<h1 align="center">jailed</h1>
 
-**jailed** is a CLI tool that spawns a secure, isolated container environment pre-loaded with seven AI coding assistants -- Claude Code, OpenCode, Aider, Kimi Code, Gemini CLI, Codex CLI, and GitHub Copilot CLI. It requires no AI tools installed on the host machine. The only prerequisite is a container runtime (Docker or Podman). All agent configurations, authentication tokens, and session data persist on the host filesystem and are portable across machines.
+<p align="center">
+  <b>Secure, isolated container environment with 7 AI coding assistants</b>
+</p>
+
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
+  <img src="https://img.shields.io/badge/platform-linux%20%7C%20macOS%20%7C%20WSL2-lightgrey.svg" alt="Platform">
+  <img src="https://img.shields.io/badge/runtime-Docker%20%7C%20Podman-2496ED?logo=docker&logoColor=white" alt="Runtime">
+  <img src="https://img.shields.io/badge/shell-bash-4EAA25?logo=gnubash&logoColor=white" alt="Shell">
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Claude%20Code-000000?logo=anthropic&logoColor=white" alt="Claude Code">
+  <img src="https://img.shields.io/badge/OpenCode-FF6B6B?logo=opencode&logoColor=white" alt="OpenCode">
+  <img src="https://img.shields.io/badge/Aider-3776AB?logo=python&logoColor=white" alt="Aider">
+  <img src="https://img.shields.io/badge/Kimi%20Code-1E90FF?logo=moonshot&logoColor=white" alt="Kimi Code">
+  <img src="https://img.shields.io/badge/Gemini%20CLI-4285F4?logo=google&logoColor=white" alt="Gemini CLI">
+  <img src="https://img.shields.io/badge/Codex%20CLI-412991?logo=openai&logoColor=white" alt="Codex CLI">
+  <img src="https://img.shields.io/badge/GitHub%20Copilot-000000?logo=github&logoColor=white" alt="GitHub Copilot">
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Rust-orange?logo=rust&logoColor=white" alt="Rust">
+  <img src="https://img.shields.io/badge/Node.js-339933?logo=nodedotjs&logoColor=white" alt="Node.js">
+  <img src="https://img.shields.io/badge/Python-3776AB?logo=python&logoColor=white" alt="Python">
+  <img src="https://img.shields.io/badge/Go-EF3939?logo=go&logoColor=white" alt="uv">
+</p>
+
+---
+
+**jailed** is a CLI tool that spawns a secure, isolated container environment pre-loaded with seven AI coding assistants — no AI tools need to be installed on your host machine. The only prerequisite is a container runtime (Docker or Podman). All agent configurations, authentication tokens, and session data persist on the host filesystem and are portable across machines.
 
 ---
 

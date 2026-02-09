@@ -91,6 +91,11 @@ write_state_file() {
 
     require_jq
 
+    # Atomic write: build JSON in temp file, then move to final location
+    local temp_file=$(mktemp "${STATE_FILE}.XXXXXX") || die "Failed to create temporary file"
+    local old_trap=$(trap -p EXIT)
+    trap "rm -f '$temp_file'" EXIT
+
     # Build JSON object from associative array
     local projects_json="{}"
     for name in "${!projects_array[@]}"; do
@@ -107,7 +112,16 @@ write_state_file() {
             runtime: $runtime,
             sync: $sync,
             projects: $projects
-        }' > "$STATE_FILE" || die "Failed to write state file"
+        }' > "$temp_file" || die "Failed to write state file"
+
+    mv "$temp_file" "$STATE_FILE" || die "Failed to save state file"
+
+    # Restore previous trap
+    if [ -n "$old_trap" ]; then
+        eval "$old_trap"
+    else
+        trap - EXIT
+    fi
 }
 
 get_running_container() {
@@ -137,6 +151,7 @@ add_project_to_state() {
 
     # Atomic write: read -> modify -> write to temp -> move
     local temp_file=$(mktemp "${STATE_FILE}.XXXXXX") || die "Failed to create temporary file"
+    local old_trap=$(trap -p EXIT)
     trap "rm -f '$temp_file'" EXIT
 
     jq \
@@ -147,7 +162,12 @@ add_project_to_state() {
 
     mv "$temp_file" "$STATE_FILE" || die "Failed to save state file"
 
-    trap - EXIT
+    # Restore previous trap
+    if [ -n "$old_trap" ]; then
+        eval "$old_trap"
+    else
+        trap - EXIT
+    fi
 }
 
 remove_project_from_state() {
@@ -161,6 +181,7 @@ remove_project_from_state() {
 
     # Atomic write: read -> modify -> write to temp -> move
     local temp_file=$(mktemp "${STATE_FILE}.XXXXXX") || die "Failed to create temporary file"
+    local old_trap=$(trap -p EXIT)
     trap "rm -f '$temp_file'" EXIT
 
     jq \
@@ -170,7 +191,12 @@ remove_project_from_state() {
 
     mv "$temp_file" "$STATE_FILE" || die "Failed to save state file"
 
-    trap - EXIT
+    # Restore previous trap
+    if [ -n "$old_trap" ]; then
+        eval "$old_trap"
+    else
+        trap - EXIT
+    fi
 }
 
 delete_state_file() {
@@ -402,6 +428,7 @@ dedupe_project_names() {
     local -a paths=("$@")
     local -A base_count=()
     local -A result=()
+    local -A used_names=()
 
     # Count basenames
     for p in "${paths[@]}"; do
@@ -409,15 +436,31 @@ dedupe_project_names() {
         base_count["$base"]=$(( ${base_count["$base"]:-0} + 1 ))
     done
 
-    # Assign names - prefix with parent if duplicate
+    # Assign names - prefix with parent if duplicate, handle collisions
     for p in "${paths[@]}"; do
         local base; base=$(basename "$p")
+        local candidate
         if [ "${base_count[$base]}" -gt 1 ]; then
             local parent; parent=$(basename "$(dirname "$p")")
-            result["$p"]="${parent}-${base}"
+            candidate="${parent}-${base}"
+
+            # Handle collision by adding numeric suffix
+            local count=2
+            while [ -n "${used_names[$candidate]:-}" ]; do
+                candidate="${parent}-${base}-${count}"
+                ((count++))
+            done
         else
-            result["$p"]="$base"
+            candidate="$base"
+            # Still check for collision (edge case)
+            local count=2
+            while [ -n "${used_names[$candidate]:-}" ]; do
+                candidate="${base}-${count}"
+                ((count++))
+            done
         fi
+        result["$p"]="$candidate"
+        used_names["$candidate"]=1
     done
 
     # Output: "name=path" lines
@@ -529,6 +572,9 @@ cmd_run() {
         # For mutagen: start container detached (-d), start syncs, write state, then attach
         "$RUNTIME" "${run_args[@]}" sleep infinity
 
+        # Set cleanup trap before starting syncs (in case of interruption)
+        trap '"$RUNTIME" stop "$container_name" 2>/dev/null || true' EXIT
+
         # Start mutagen sync for each project
         local mutagen_failed=false
         for entry in "${project_entries[@]}"; do
@@ -544,9 +590,9 @@ cmd_run() {
             # Fallback to bind mode
             warn "Mutagen sync failed. Falling back to bind mode..."
             "$RUNTIME" stop "$container_name" 2>/dev/null || true
+            trap - EXIT
 
-            # Rebuild args with bind mounts
-            SYNC_STRATEGY="bind"
+            # Rebuild args with bind mounts (don't mutate global SYNC_STRATEGY)
             run_args=()
             build_run_args "$container_name" run_args
 
@@ -561,8 +607,41 @@ cmd_run() {
                 run_args+=(-v "${path}:/workspace/${name}${vol_suffix}")
             done
 
-            # Write state file
-            write_state_file "$container_name" projects_map
+            # Update projects_map with bind strategy for state file
+            local -A bind_projects_map=()
+            for name in "${!projects_map[@]}"; do
+                bind_projects_map["$name"]="${projects_map[$name]}"
+            done
+
+            # Write state file with bind strategy (pass by value, not reference)
+            local temp_file=$(mktemp "${STATE_FILE}.XXXXXX") || die "Failed to create temporary file"
+            local old_trap=$(trap -p EXIT)
+            trap "rm -f '$temp_file'" EXIT
+
+            local projects_json="{}"
+            for name in "${!bind_projects_map[@]}"; do
+                projects_json=$(echo "$projects_json" | jq --arg k "$name" --arg v "${bind_projects_map[$name]}" '. + {($k): $v}') || die "Failed to build projects JSON"
+            done
+
+            jq -n \
+                --arg container "$container_name" \
+                --arg runtime "$RUNTIME" \
+                --arg sync "bind" \
+                --argjson projects "$projects_json" \
+                '{
+                    container: $container,
+                    runtime: $runtime,
+                    sync: $sync,
+                    projects: $projects
+                }' > "$temp_file" || die "Failed to write state file"
+
+            mv "$temp_file" "$STATE_FILE" || die "Failed to save state file"
+
+            if [ -n "$old_trap" ]; then
+                eval "$old_trap"
+            else
+                trap - EXIT
+            fi
 
             # Run with bind mounts (interactive)
             trap 'delete_state_file' EXIT
@@ -575,7 +654,7 @@ cmd_run() {
             write_state_file "$container_name" projects_map
 
             # Attach to the running container interactively
-            # Trap ensures cleanup on unexpected exit (e.g. Ctrl+C)
+            # Replace trap with full cleanup (now that syncs are established)
             trap 'stop_all_mutagen_syncs "$container_name"; delete_state_file; "$RUNTIME" stop "$container_name" 2>/dev/null || true' EXIT
             "$RUNTIME" exec -it "$container_name" gosu "$USERNAME" zsh -l
 

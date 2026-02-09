@@ -850,8 +850,8 @@ cmd_help() {
 jailed - Secure AI coding assistant container
 
 Usage:
-  jailed [path]                       Start container (default: current directory)
-  jailed attach <path> [--container]  Hot-attach additional project to running container
+  jailed [path...]                    Start container with one or more projects
+  jailed attach <path>                Attach project to running container (mutagen only)
   jailed detach <project-name>        Remove project from running container
   jailed ls                           List running container and attached projects
   jailed build [--name USER]          Build/rebuild the container image
@@ -862,6 +862,7 @@ Options:
   --runtime <docker|podman>    Container runtime (default: auto-detect)
   --testcontainers             Mount Docker/Podman socket for Testcontainers
   --sync <mutagen|bind>        Sync strategy (default: mutagen)
+  --container <name>           Target container for attach command
 
 Environment Variables:
   JAILED_RUNTIME               Force container runtime

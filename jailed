@@ -317,6 +317,44 @@ stop_mutagen_sync() {
     fi
 }
 
+stop_mutagen_sync_strict() {
+    local container_name="$1"
+    local project_name="$2"
+    local session_name="jailed-${container_name}-${project_name}"
+
+    if ! mutagen_available; then
+        die "Mutagen not found. Cannot safely stop sync for '$project_name'."
+    fi
+
+    # 1. Check session exists (already gone = safe)
+    if ! mutagen sync list "$session_name" >/dev/null 2>&1; then
+        warn "No sync session found for '$project_name'. Skipping sync shutdown."
+        return 0
+    fi
+
+    # 2. Flush in-flight changes
+    info "Flushing sync for '$project_name'..."
+    if ! mutagen sync flush "$session_name"; then
+        error "Sync flush failed for '$project_name'. Files left intact."
+        return 1
+    fi
+
+    # 3. Terminate the session
+    info "Terminating sync for '$project_name'..."
+    if ! mutagen sync terminate "$session_name"; then
+        error "Sync terminate failed for '$project_name'. Files left intact."
+        return 1
+    fi
+
+    # 4. Verify session is gone
+    if mutagen sync list "$session_name" >/dev/null 2>&1; then
+        error "Sync session still exists for '$project_name'. Refusing to delete files."
+        return 1
+    fi
+
+    return 0
+}
+
 stop_all_mutagen_syncs() {
     local container_name="$1"
 

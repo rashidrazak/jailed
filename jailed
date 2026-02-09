@@ -212,9 +212,11 @@ setup_podman_mutagen_shim() {
     # Mutagen shells out to "docker" CLI. Create a temporary shim
     # so it finds podman when docker isn't installed.
     if ! command -v docker >/dev/null 2>&1; then
-        local shim_dir
+        local shim_dir podman_path
         shim_dir=$(mktemp -d)
-        ln -s "$(command -v podman)" "$shim_dir/docker"
+        trap "rm -rf '$shim_dir'" EXIT
+        podman_path=$(command -v podman) || die "podman not found in PATH"
+        ln -s "$podman_path" "$shim_dir/docker"
         export PATH="$shim_dir:$PATH"
     fi
 

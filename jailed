@@ -209,14 +209,15 @@ setup_podman_mutagen_shim() {
         warn "Podman socket not found. Mutagen sync may fail."
     fi
 
-    # Mutagen shells out to "docker" CLI. Create a temporary shim
-    # so it finds podman when docker isn't installed.
+    # Mutagen shells out to "docker" CLI. Create a persistent shim directory
+    # in cache so it finds podman when docker isn't installed.
     if ! command -v docker >/dev/null 2>&1; then
-        local shim_dir podman_path
-        shim_dir=$(mktemp -d)
-        trap "rm -rf '$shim_dir'" EXIT
+        local shim_dir="$HOME/.cache/jailed/docker-shim"
+        local podman_path
         podman_path=$(command -v podman) || die "podman not found in PATH"
-        ln -s "$podman_path" "$shim_dir/docker"
+
+        mkdir -p "$shim_dir"
+        ln -sf "$podman_path" "$shim_dir/docker"
         export PATH="$shim_dir:$PATH"
     fi
 

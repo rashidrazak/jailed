@@ -260,6 +260,7 @@ mutagen_available() {
 start_mutagen_sync() {
     local host_dir="$1"
     local container_name="$2"
+    local project_name="$3"
 
     if ! mutagen_available; then
         warn "Mutagen not found. Install it for better file sync performance:"
@@ -271,28 +272,47 @@ start_mutagen_sync() {
     fi
 
     mutagen sync create \
-        --name="jailed-${container_name}" \
+        --name="jailed-${container_name}-${project_name}" \
         --sync-mode=two-way-resolved \
         --ignore=".git" \
         --default-owner-beta="$USERNAME" \
         "$host_dir" \
-        "docker://${USERNAME}@${container_name}/workspace"
+        "docker://${USERNAME}@${container_name}/workspace/${project_name}"
 
-    info "Mutagen sync started (session: jailed-${container_name})"
+    info "Mutagen sync started (session: jailed-${container_name}-${project_name})"
 }
 
 stop_mutagen_sync() {
     local container_name="$1"
+    local project_name="$2"
     if mutagen_available; then
-        mutagen sync terminate "jailed-${container_name}" 2>/dev/null || true
+        mutagen sync terminate "jailed-${container_name}-${project_name}" 2>/dev/null || true
     fi
+}
+
+stop_all_mutagen_syncs() {
+    local container_name="$1"
+
+    if [ ! -f "$STATE_FILE" ]; then
+        return
+    fi
+
+    require_jq
+
+    # Get all project names from state file
+    local project_names
+    project_names=$(jq -r '.projects | keys[]' "$STATE_FILE" 2>/dev/null) || return
+
+    # Stop each mutagen sync session
+    while IFS= read -r project_name; do
+        [ -n "$project_name" ] && stop_mutagen_sync "$container_name" "$project_name"
+    done <<< "$project_names"
 }
 
 # --- Build container run arguments ---
 build_run_args() {
-    local project_dir="$1"
-    local container_name="$2"
-    local -n _args=$3
+    local container_name="$1"
+    local -n _args=$2
 
     # Mutagen mode runs detached; bind mode runs interactive
     local run_flags="-it"
@@ -338,11 +358,8 @@ build_run_args() {
         _args+=(-v "$CONFIG_DIR/agents/.claude.json.backup:/home/$USERNAME/.claude.json.backup${vol_suffix}")
     fi
 
-    # Project directory mount (only when sync=bind)
-    if [ "$SYNC_STRATEGY" = "bind" ]; then
-        _args+=(-v "${project_dir}:/workspace${vol_suffix}")
-    fi
-    # If mutagen, /workspace is synced separately (no bind mount needed)
+    # Project directory mounts are added by cmd_run() after this function returns
+    # (only for bind mode; mutagen syncs separately)
 
     # Runtime-specific security flags
     if [ "$RUNTIME" = "podman" ]; then
@@ -380,10 +397,53 @@ build_run_args() {
     _args+=("$IMAGE_NAME")
 }
 
+# --- Dedupe project names ---
+dedupe_project_names() {
+    local -a paths=("$@")
+    local -A base_count=()
+    local -A result=()
+
+    # Count basenames
+    for p in "${paths[@]}"; do
+        local base; base=$(basename "$p")
+        base_count["$base"]=$(( ${base_count["$base"]:-0} + 1 ))
+    done
+
+    # Assign names - prefix with parent if duplicate
+    for p in "${paths[@]}"; do
+        local base; base=$(basename "$p")
+        if [ "${base_count[$base]}" -gt 1 ]; then
+            local parent; parent=$(basename "$(dirname "$p")")
+            result["$p"]="${parent}-${base}"
+        else
+            result["$p"]="$base"
+        fi
+    done
+
+    # Output: "name=path" lines
+    for p in "${paths[@]}"; do
+        echo "${result[$p]}=$p"
+    done
+}
+
 # --- Run command ---
 cmd_run() {
-    PROJECT_DIR="${1:-$(pwd)}"
-    PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd)"
+    # Parse project paths (default to current directory if none provided)
+    local -a project_paths=()
+    if [ $# -eq 0 ]; then
+        project_paths=("$(pwd)")
+    else
+        while [[ $# -gt 0 ]]; do
+            local path="$1"
+            shift
+            # Resolve to absolute path
+            if [ ! -d "$path" ]; then
+                die "Not a directory: $path"
+            fi
+            path="$(cd "$path" && pwd)"
+            project_paths+=("$path")
+        done
+    fi
 
     # First run experience: prompt to build if no image found
     if ! image_exists; then
@@ -397,12 +457,37 @@ cmd_run() {
 
     ensure_config_dirs
 
-    # Generate unique container name from project dir + random suffix
-    local dir_name
-    dir_name=$(basename "$PROJECT_DIR")
+    # Check if container already running
+    local existing_container
+    existing_container=$(get_running_container)
+    if [ -n "$existing_container" ]; then
+        if is_container_alive "$existing_container"; then
+            die "Container already running: $existing_container. Use 'jailed attach <path>' to add more projects."
+        else
+            warn "Stale state file detected. Cleaning up..."
+            delete_state_file
+        fi
+    fi
+
+    # Generate project name->path mappings (dedupe basenames)
+    local -a project_entries=()
+    while IFS= read -r entry; do
+        project_entries+=("$entry")
+    done < <(dedupe_project_names "${project_paths[@]}")
+
+    # Generate unique container name from first project dir + random suffix
+    local first_project_name="${project_entries[0]%%=*}"
     local rand_suffix
     rand_suffix=$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')
-    local container_name="jailed-${dir_name}-${rand_suffix}"
+    local container_name="jailed-${first_project_name}-${rand_suffix}"
+
+    # Build associative array for state file
+    local -A projects_map=()
+    for entry in "${project_entries[@]}"; do
+        local name="${entry%%=*}"
+        local path="${entry#*=}"
+        projects_map["$name"]="$path"
+    done
 
     # For Podman with mutagen: set DOCKER_HOST to the Podman socket path
     # so mutagen can use it as a Docker-compatible endpoint
@@ -410,47 +495,103 @@ cmd_run() {
         setup_podman_mutagen_shim
     fi
 
+    # Build base container args (without project mounts)
     local run_args=()
-    build_run_args "$PROJECT_DIR" "$container_name" run_args
+    build_run_args "$container_name" run_args
+
+    # Add project bind mounts (bind mode only)
+    if [ "$SYNC_STRATEGY" = "bind" ]; then
+        local vol_suffix=""
+        if [ "$RUNTIME" = "podman" ]; then
+            vol_suffix=":z"
+        fi
+
+        for entry in "${project_entries[@]}"; do
+            local name="${entry%%=*}"
+            local path="${entry#*=}"
+            run_args+=(-v "${path}:/workspace/${name}${vol_suffix}")
+        done
+    fi
 
     info "Starting jailed container..."
-    info "Project: $PROJECT_DIR"
+    info "Projects: ${#project_paths[@]}"
+    for entry in "${project_entries[@]}"; do
+        local name="${entry%%=*}"
+        local path="${entry#*=}"
+        info "  - $name: $path"
+    done
     info "Runtime: $RUNTIME"
     info "Sync: $SYNC_STRATEGY"
     info "Container: $container_name"
 
     # Start container
     if [ "$SYNC_STRATEGY" = "mutagen" ]; then
-        # For mutagen: start container detached (-d), start sync, then attach
+        # For mutagen: start container detached (-d), start syncs, write state, then attach
         "$RUNTIME" "${run_args[@]}" sleep infinity
 
-        # Start mutagen sync
-        if ! start_mutagen_sync "$PROJECT_DIR" "$container_name"; then
-            # Fallback already handled inside start_mutagen_sync (sets SYNC_STRATEGY=bind)
-            # Need to restart with bind mount
+        # Start mutagen sync for each project
+        local mutagen_failed=false
+        for entry in "${project_entries[@]}"; do
+            local name="${entry%%=*}"
+            local path="${entry#*=}"
+            if ! start_mutagen_sync "$path" "$container_name" "$name"; then
+                mutagen_failed=true
+                break
+            fi
+        done
+
+        if [ "$mutagen_failed" = true ]; then
+            # Fallback to bind mode
+            warn "Mutagen sync failed. Falling back to bind mode..."
             "$RUNTIME" stop "$container_name" 2>/dev/null || true
 
-            # Re-run with bind mount
+            # Rebuild args with bind mounts
+            SYNC_STRATEGY="bind"
             run_args=()
-            build_run_args "$PROJECT_DIR" "$container_name" run_args
+            build_run_args "$container_name" run_args
+
+            local vol_suffix=""
+            if [ "$RUNTIME" = "podman" ]; then
+                vol_suffix=":z"
+            fi
+
+            for entry in "${project_entries[@]}"; do
+                local name="${entry%%=*}"
+                local path="${entry#*=}"
+                run_args+=(-v "${path}:/workspace/${name}${vol_suffix}")
+            done
+
+            # Write state file
+            write_state_file "$container_name" projects_map
+
+            # Run with bind mounts (interactive)
+            trap 'delete_state_file' EXIT
             "$RUNTIME" "${run_args[@]}"
+            delete_state_file
+            trap - EXIT
         else
-            # Attach to the running container interactively.
-            # Trap ensures cleanup on unexpected exit (e.g. Ctrl+C).
-            trap 'stop_mutagen_sync "$container_name"' EXIT
+            # Mutagen syncs started successfully
+            # Write state file
+            write_state_file "$container_name" projects_map
+
+            # Attach to the running container interactively
+            # Trap ensures cleanup on unexpected exit (e.g. Ctrl+C)
+            trap 'stop_all_mutagen_syncs "$container_name"; delete_state_file; "$RUNTIME" stop "$container_name" 2>/dev/null || true' EXIT
             "$RUNTIME" exec -it "$container_name" gosu "$USERNAME" zsh -l
 
-            # Normal exit: clean up explicitly, then clear the trap.
-            # (The trap references a local variable that goes out of scope
-            # after this function returns, which causes an unbound variable
-            # error with set -u if the trap fires at script exit.)
-            stop_mutagen_sync "$container_name"
-            trap - EXIT
+            # Normal exit: clean up explicitly, then clear the trap
+            stop_all_mutagen_syncs "$container_name"
+            delete_state_file
             "$RUNTIME" stop "$container_name" 2>/dev/null || true
+            trap - EXIT
         fi
     else
-        # For bind mount: run directly (interactive)
+        # For bind mount: write state, run directly (interactive), cleanup on exit
+        write_state_file "$container_name" projects_map
+        trap 'delete_state_file' EXIT
         "$RUNTIME" "${run_args[@]}"
+        delete_state_file
+        trap - EXIT
     fi
 }
 

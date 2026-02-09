@@ -303,7 +303,8 @@ start_mutagen_sync() {
         --ignore=".git" \
         --default-owner-beta="$USERNAME" \
         "$host_dir" \
-        "docker://${USERNAME}@${container_name}/workspace/${project_name}"
+        "docker://${USERNAME}@${container_name}/workspace/${project_name}" \
+        || return 1
 
     info "Mutagen sync started (session: jailed-${container_name}-${project_name})"
 }
@@ -722,7 +723,15 @@ cmd_attach() {
     fi
     project_path="$(cd "$project_path" && pwd)"
 
-    # 6. Generate project name (check existing names for deduplication)
+    # 6. Check for duplicate project path
+    local existing_project_path
+    while IFS= read -r existing_project_path; do
+        if [ "$existing_project_path" = "$project_path" ]; then
+            die "Project already attached: $project_path"
+        fi
+    done < <(jq -r '.projects[]' "$STATE_FILE" 2>/dev/null)
+
+    # 7. Generate project name (check existing names for deduplication)
     # Read existing project paths from state file
     local -a existing_paths=()
     while IFS= read -r path; do
@@ -746,31 +755,37 @@ cmd_attach() {
     info "  Path: $project_path"
     info "  Container: $container_name"
 
-    # 7. Create workspace directory in container
+    # 8. Create workspace directory in container
     "$RUNTIME" exec "$container_name" mkdir -p "/workspace/$project_name" || die "Failed to create workspace directory"
 
-    # 8. Set ownership (chown to container user)
+    # 9. Set ownership (chown to container user)
     "$RUNTIME" exec "$container_name" chown "$USERNAME:$USERNAME" "/workspace/$project_name" || die "Failed to set directory ownership"
 
-    # 9. Setup Podman + Mutagen shim if needed
+    # 10. Setup Podman + Mutagen shim if needed
     if [ "$RUNTIME" = "podman" ]; then
         setup_podman_mutagen_shim
     fi
 
-    # 10. Start mutagen sync
+    # 11. Start mutagen sync
     if ! start_mutagen_sync "$project_path" "$container_name" "$project_name"; then
         die "Failed to start mutagen sync for project '$project_name'"
     fi
 
-    # 11. Add project to state file
+    # 12. Verify sync is actually running
+    sleep 1
+    if ! mutagen sync list "jailed-${container_name}-${project_name}" >/dev/null 2>&1; then
+        die "Mutagen sync failed to initialize for project '$project_name'"
+    fi
+
+    # 13. Add project to state file (only after sync verified)
     add_project_to_state "$project_name" "$project_path"
 
-    # 12. Success message and open shell in project directory
+    # 14. Success message and open shell in project directory
     success "Project '$project_name' attached successfully!"
     info "Opening shell in /workspace/$project_name..."
     "$RUNTIME" exec -it "$container_name" gosu "$USERNAME" zsh -c "cd /workspace/$project_name && exec zsh -l"
 
-    # 13. On shell exit: container and sync stay alive
+    # 15. On shell exit: container and sync stay alive
     info "Shell exited. Project remains attached. Container is still running."
 }
 

@@ -86,12 +86,15 @@ write_state_file() {
     local container_name="$1"
     local -n projects_array=$2
 
+    # Validate inputs
+    [ -z "$container_name" ] && die "Container name cannot be empty"
+
     require_jq
 
     # Build JSON object from associative array
     local projects_json="{}"
     for name in "${!projects_array[@]}"; do
-        projects_json=$(echo "$projects_json" | jq --arg k "$name" --arg v "${projects_array[$name]}" '. + {($k): $v}')
+        projects_json=$(echo "$projects_json" | jq --arg k "$name" --arg v "${projects_array[$name]}" '. + {($k): $v}') || die "Failed to build projects JSON"
     done
 
     jq -n \
@@ -104,7 +107,7 @@ write_state_file() {
             runtime: $runtime,
             sync: $sync,
             projects: $projects
-        }' > "$STATE_FILE"
+        }' > "$STATE_FILE" || die "Failed to write state file"
 }
 
 get_running_container() {
@@ -133,14 +136,18 @@ add_project_to_state() {
     fi
 
     # Atomic write: read -> modify -> write to temp -> move
-    local temp_file="${STATE_FILE}.tmp"
+    local temp_file=$(mktemp "${STATE_FILE}.XXXXXX") || die "Failed to create temporary file"
+    trap "rm -f '$temp_file'" EXIT
+
     jq \
         --arg name "$project_name" \
         --arg path "$project_path" \
         '.projects[$name] = $path' \
-        "$STATE_FILE" > "$temp_file"
+        "$STATE_FILE" > "$temp_file" || die "Failed to update state file"
 
-    mv "$temp_file" "$STATE_FILE"
+    mv "$temp_file" "$STATE_FILE" || die "Failed to save state file"
+
+    trap - EXIT
 }
 
 remove_project_from_state() {
@@ -153,13 +160,17 @@ remove_project_from_state() {
     fi
 
     # Atomic write: read -> modify -> write to temp -> move
-    local temp_file="${STATE_FILE}.tmp"
+    local temp_file=$(mktemp "${STATE_FILE}.XXXXXX") || die "Failed to create temporary file"
+    trap "rm -f '$temp_file'" EXIT
+
     jq \
         --arg name "$project_name" \
         'del(.projects[$name])' \
-        "$STATE_FILE" > "$temp_file"
+        "$STATE_FILE" > "$temp_file" || die "Failed to update state file"
 
-    mv "$temp_file" "$STATE_FILE"
+    mv "$temp_file" "$STATE_FILE" || die "Failed to save state file"
+
+    trap - EXIT
 }
 
 delete_state_file() {

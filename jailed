@@ -789,6 +789,33 @@ cmd_attach() {
     info "Shell exited. Project remains attached. Container is still running."
 }
 
+# --- Detach command (remove project from running container) ---
+cmd_detach() {
+    local project_name="${1:?Usage: jailed detach <project-name>}"
+
+    # 1. Check for jq dependency
+    require_jq
+
+    # 2. Get container name from state file
+    local container_name
+    container_name=$(get_running_container)
+    [ -z "$container_name" ] && die "No running container found"
+
+    # 3. Validate project exists in state file
+    local project_path
+    project_path=$(jq -r ".projects[\"$project_name\"] // empty" "$STATE_FILE")
+    [ -z "$project_path" ] && die "Project '$project_name' not found. Run 'jailed ls' to see attached projects."
+
+    # 4. Stop mutagen sync for the project
+    stop_mutagen_sync "$container_name" "$project_name"
+
+    # 5. Remove project from state file
+    remove_project_from_state "$project_name"
+
+    # 6. Success message
+    success "Detached '$project_name' from $container_name"
+}
+
 # --- Help ---
 cmd_help() {
     cat <<'EOF'
@@ -797,6 +824,7 @@ jailed - Secure AI coding assistant container
 Usage:
   jailed [path]                       Start container (default: current directory)
   jailed attach <path> [--container]  Hot-attach additional project to running container
+  jailed detach <project-name>        Remove project from running container
   jailed build [--name USER]          Build/rebuild the container image
   jailed version                      Show version
   jailed help                         Show this help
@@ -862,6 +890,7 @@ main() {
     case "$command" in
         build)   shift; cmd_build "$@" ;;
         attach)  shift; cmd_attach "$@" ;;
+        detach)  shift; cmd_detach "$@" ;;
         version) cmd_version ;;
         help|--help|-h) cmd_help ;;
         *)       cmd_run "$@" ;;

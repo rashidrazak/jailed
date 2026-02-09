@@ -37,6 +37,7 @@ ARG USER_UID=1000
 ARG USER_GID=1000
 
 ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ="Asia/Kuala_Lumpur"
 
 # --- System packages ---
 RUN apt-get update && apt-get install -y --no-install-recommends \

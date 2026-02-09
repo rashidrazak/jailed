@@ -153,25 +153,37 @@ build_run_args() {
         -e "TERM=${TERM:-xterm-256color}"
     )
 
+    # SELinux label for Podman bind mounts (:z = shared context)
+    # The Podman VM runs SELinux in Enforcing mode; without this label
+    # the container process is denied read/write access to bind mounts.
+    local vol_suffix=""
+    if [ "$RUNTIME" = "podman" ]; then
+        vol_suffix=":z"
+    fi
+
     # Config bind mounts (all 7 agents + sessions)
-    _args+=(-v "$CONFIG_DIR/agents/claude:/home/$USERNAME/.claude")
-    _args+=(-v "$CONFIG_DIR/agents/opencode:/home/$USERNAME/.config/opencode")
-    _args+=(-v "$CONFIG_DIR/agents/opencode-data:/home/$USERNAME/.local/share/opencode")
-    _args+=(-v "$CONFIG_DIR/agents/aider:/home/$USERNAME/.aider")
-    _args+=(-v "$CONFIG_DIR/agents/kimi:/home/$USERNAME/.kimi")
-    _args+=(-v "$CONFIG_DIR/agents/gemini:/home/$USERNAME/.gemini")
-    _args+=(-v "$CONFIG_DIR/agents/codex:/home/$USERNAME/.codex")
-    _args+=(-v "$CONFIG_DIR/agents/copilot:/home/$USERNAME/.config/github-copilot")
-    _args+=(-v "$CONFIG_DIR/agents/gh:/home/$USERNAME/.config/gh")
-    _args+=(-v "$CONFIG_DIR/sessions:/home/$USERNAME/.jailed-sessions")
+    _args+=(-v "$CONFIG_DIR/agents/claude:/home/$USERNAME/.claude${vol_suffix}")
+    _args+=(-v "$CONFIG_DIR/agents/opencode:/home/$USERNAME/.config/opencode${vol_suffix}")
+    _args+=(-v "$CONFIG_DIR/agents/opencode-data:/home/$USERNAME/.local/share/opencode${vol_suffix}")
+    _args+=(-v "$CONFIG_DIR/agents/aider:/home/$USERNAME/.aider${vol_suffix}")
+    _args+=(-v "$CONFIG_DIR/agents/kimi:/home/$USERNAME/.kimi${vol_suffix}")
+    _args+=(-v "$CONFIG_DIR/agents/gemini:/home/$USERNAME/.gemini${vol_suffix}")
+    _args+=(-v "$CONFIG_DIR/agents/codex:/home/$USERNAME/.codex${vol_suffix}")
+    _args+=(-v "$CONFIG_DIR/agents/copilot:/home/$USERNAME/.config/github-copilot${vol_suffix}")
+    _args+=(-v "$CONFIG_DIR/agents/gh:/home/$USERNAME/.config/gh${vol_suffix}")
+    _args+=(-v "$CONFIG_DIR/sessions:/home/$USERNAME/.jailed-sessions${vol_suffix}")
+
+    if [ -f "$CONFIG_DIR/agents/.claude.json" ]; then
+        _args+=(-v "$CONFIG_DIR/agents/.claude.json:/home/$USERNAME/.claude.json${vol_suffix}")
+    fi
+
+    if [ -f "$CONFIG_DIR/agents/.claude.json.backup" ]; then
+        _args+=(-v "$CONFIG_DIR/agents/.claude.json.backup:/home/$USERNAME/.claude.json.backup${vol_suffix}")
+    fi
 
     # Project directory mount (only when sync=bind)
     if [ "$SYNC_STRATEGY" = "bind" ]; then
-        if [ "$RUNTIME" = "podman" ]; then
-            _args+=(-v "${project_dir}:/workspace:z")
-        else
-            _args+=(-v "${project_dir}:/workspace")
-        fi
+        _args+=(-v "${project_dir}:/workspace${vol_suffix}")
     fi
     # If mutagen, /workspace is synced separately (no bind mount needed)
 
@@ -181,10 +193,13 @@ build_run_args() {
     else
         _args+=(--security-opt no-new-privileges)
         _args+=(--cap-drop ALL)
+        _args+=(--cap-add SETUID --cap-add SETGID)
         _args+=(--read-only)
         _args+=(--tmpfs /tmp)
         _args+=(--tmpfs /run)
         _args+=(--tmpfs "/home/$USERNAME/.cache")
+        _args+=(--tmpfs "/home/$USERNAME/.config:mode=1777")
+        _args+=(--tmpfs "/home/$USERNAME/.local:mode=1777")
     fi
 
     # Testcontainers socket mount (opt-in via --testcontainers flag)

@@ -300,9 +300,10 @@ jailed is designed with defense-in-depth. The container is locked down by defaul
 When using Docker, the following hardening flags are applied automatically:
 
 - `--security-opt no-new-privileges` -- prevents privilege escalation
-- `--cap-drop ALL` -- drops all Linux capabilities
+- `--cap-drop ALL --cap-add SETUID --cap-add SETGID` -- drops all Linux capabilities except those needed for the entrypoint to switch from root to the non-root user
 - `--read-only` -- enforces a read-only root filesystem
 - `--tmpfs /tmp --tmpfs /run` -- provides writable temporary filesystems where needed
+- `--tmpfs ~/.config --tmpfs ~/.local` -- writable XDG directories for agent config; bind mounts at child paths override for persistent data
 - No `--privileged` flag is ever used
 
 ### Podman Security

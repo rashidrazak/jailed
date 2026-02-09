@@ -84,16 +84,20 @@ require_jq() {
 
 write_state_file() {
     local container_name="$1"
-    local runtime="$2"
-    local sync_strategy="$3"
-    local projects_json="$4"
+    local -n projects_array=$2
 
     require_jq
 
+    # Build JSON object from associative array
+    local projects_json="{}"
+    for name in "${!projects_array[@]}"; do
+        projects_json=$(echo "$projects_json" | jq --arg k "$name" --arg v "${projects_array[$name]}" '. + {($k): $v}')
+    done
+
     jq -n \
         --arg container "$container_name" \
-        --arg runtime "$runtime" \
-        --arg sync "$sync_strategy" \
+        --arg runtime "$RUNTIME" \
+        --arg sync "$SYNC_STRATEGY" \
         --argjson projects "$projects_json" \
         '{
             container: $container,
@@ -115,13 +119,7 @@ get_running_container() {
 
 is_container_alive() {
     local container_name="$1"
-
-    if [ -z "$container_name" ]; then
-        return 1
-    fi
-
-    "$RUNTIME" inspect "$container_name" >/dev/null 2>&1 && \
-    [ "$("$RUNTIME" inspect --format '{{.State.Running}}' "$container_name" 2>/dev/null)" = "true" ]
+    "$RUNTIME" inspect "$container_name" >/dev/null 2>&1
 }
 
 add_project_to_state() {
@@ -165,9 +163,7 @@ remove_project_from_state() {
 }
 
 delete_state_file() {
-    if [ -f "$STATE_FILE" ]; then
-        rm "$STATE_FILE"
-    fi
+    rm -f "$STATE_FILE"
 }
 
 # --- Image check ---

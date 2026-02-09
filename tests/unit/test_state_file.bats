@@ -3,6 +3,8 @@
 
 load test_helpers
 
+bats_require_minimum_version 1.5.0
+
 # ---------------------------------------------------------------------------
 # require_jq
 # ---------------------------------------------------------------------------
@@ -33,8 +35,15 @@ load test_helpers
     # Source functions from jailed script
     source "$JAILED_DIR/jailed"
 
-    local projects='{"projectA":"/path/to/projectA"}'
-    write_state_file "test-container" "podman" "mutagen" "$projects"
+    # Set required global variables
+    RUNTIME="podman"
+    SYNC_STRATEGY="mutagen"
+
+    # Create associative array for projects
+    declare -A projects_map
+    projects_map["projectA"]="/path/to/projectA"
+
+    write_state_file "test-container" projects_map
 
     [ -f "$STATE_FILE" ]
 
@@ -83,8 +92,15 @@ load test_helpers
     # Source functions from jailed script
     source "$JAILED_DIR/jailed"
 
-    local projects='{"projectA":"/path/to/projectA"}'
-    write_state_file "test-container-123" "podman" "mutagen" "$projects"
+    # Set required global variables
+    RUNTIME="podman"
+    SYNC_STRATEGY="mutagen"
+
+    # Create associative array for projects
+    declare -A projects_map
+    projects_map["projectA"]="/path/to/projectA"
+
+    write_state_file "test-container-123" projects_map
 
     run get_running_container
     [ "$status" -eq 0 ]
@@ -99,7 +115,7 @@ load test_helpers
     # Source functions from jailed script
     source "$JAILED_DIR/jailed"
 
-    run is_container_alive ""
+    run -127 is_container_alive ""
     [ "$status" -ne 0 ]
 }
 
@@ -107,7 +123,7 @@ load test_helpers
     # Source functions from jailed script
     source "$JAILED_DIR/jailed"
 
-    run is_container_alive "non-existent-container-xyz"
+    run -127 is_container_alive "non-existent-container-xyz"
     [ "$status" -ne 0 ]
 }
 
@@ -124,9 +140,15 @@ load test_helpers
     # Source functions from jailed script
     source "$JAILED_DIR/jailed"
 
-    # Create initial state
-    local projects='{"projectA":"/path/to/projectA"}'
-    write_state_file "test-container" "podman" "mutagen" "$projects"
+    # Set required global variables
+    RUNTIME="podman"
+    SYNC_STRATEGY="mutagen"
+
+    # Create associative array for projects
+    declare -A projects_map
+    projects_map["projectA"]="/path/to/projectA"
+
+    write_state_file "test-container" projects_map
 
     # Add new project
     add_project_to_state "projectB" "/path/to/projectB"
@@ -168,9 +190,16 @@ load test_helpers
     # Source functions from jailed script
     source "$JAILED_DIR/jailed"
 
-    # Create initial state with two projects
-    local projects='{"projectA":"/path/to/projectA","projectB":"/path/to/projectB"}'
-    write_state_file "test-container" "podman" "mutagen" "$projects"
+    # Set required global variables
+    RUNTIME="podman"
+    SYNC_STRATEGY="mutagen"
+
+    # Create associative array for projects
+    declare -A projects_map
+    projects_map["projectA"]="/path/to/projectA"
+    projects_map["projectB"]="/path/to/projectB"
+
+    write_state_file "test-container" projects_map
 
     # Remove one project
     remove_project_from_state "projectA"
@@ -213,9 +242,15 @@ load test_helpers
     # Source functions from jailed script
     source "$JAILED_DIR/jailed"
 
-    # Create state file
-    local projects='{"projectA":"/path/to/projectA"}'
-    write_state_file "test-container" "podman" "mutagen" "$projects"
+    # Set required global variables
+    RUNTIME="podman"
+    SYNC_STRATEGY="mutagen"
+
+    # Create associative array for projects
+    declare -A projects_map
+    projects_map["projectA"]="/path/to/projectA"
+
+    write_state_file "test-container" projects_map
 
     [ -f "$STATE_FILE" ]
 

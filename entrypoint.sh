@@ -19,6 +19,9 @@ fi
 
 chown -R "$USERNAME:$USERNAME" "/home/$USERNAME" 2>/dev/null || true
 chown "$USERNAME:$USERNAME" /workspace 2>/dev/null || true
+for dir in /workspace/*/; do
+    [ -d "$dir" ] && chown "$USERNAME:$USERNAME" "$dir" 2>/dev/null || true
+done
 
 # --- Docker/Podman socket permissions ---
 if [ -S /var/run/docker.sock ]; then

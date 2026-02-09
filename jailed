@@ -844,13 +844,27 @@ cmd_detach() {
     project_path=$(jq -r ".projects[\"$project_name\"] // empty" "$STATE_FILE")
     [ -z "$project_path" ] && die "Project '$project_name' not found. Run 'jailed ls' to see attached projects."
 
-    # 4. Stop mutagen sync for the project
-    stop_mutagen_sync "$container_name" "$project_name"
+    # 4. Setup Podman shim if needed (for mutagen commands)
+    if [ "$RUNTIME" = "podman" ]; then
+        setup_podman_mutagen_shim
+    fi
 
-    # 5. Remove project from state file
+    # 5. Strict sync shutdown (GATE -- must succeed before file deletion)
+    if ! stop_mutagen_sync_strict "$container_name" "$project_name"; then
+        die "Sync shutdown failed. Project files left intact in /workspace/$project_name. Resolve the sync issue and retry."
+    fi
+
+    # 6. Delete /workspace/<project> inside container
+    info "Removing /workspace/$project_name from container..."
+    if ! "$RUNTIME" exec "$container_name" rm -rf "/workspace/$project_name"; then
+        warn "Failed to remove /workspace/$project_name from container. Files may remain."
+        # Non-fatal: sync is already stopped, so proceed with state cleanup
+    fi
+
+    # 7. Remove project from state file
     remove_project_from_state "$project_name"
 
-    # 6. Success message
+    # 8. Success message
     success "Detached '$project_name' from $container_name"
 }
 

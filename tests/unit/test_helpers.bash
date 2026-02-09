@@ -22,11 +22,18 @@ exit 0
 STUB
     chmod +x "${STUB_BIN_DIR}/docker"
 
-    # Create a stub "jq" for testing - outputs empty JSON for reads
+    # Create a wrapper for "jq" that uses real jq but falls back to stub
     cat > "${STUB_BIN_DIR}/jq" <<'STUB'
 #!/usr/bin/env bash
-# Stub jq for testing - outputs empty JSON for reads
-echo "{}"
+# jq wrapper for testing - use real jq if available, otherwise stub
+if command -v /usr/bin/jq >/dev/null 2>&1; then
+    exec /usr/bin/jq "$@"
+elif command -v /opt/homebrew/bin/jq >/dev/null 2>&1; then
+    exec /opt/homebrew/bin/jq "$@"
+else
+    # Fallback stub - outputs empty JSON
+    echo "{}"
+fi
 STUB
     chmod +x "${STUB_BIN_DIR}/jq"
 

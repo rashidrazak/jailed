@@ -21,6 +21,15 @@ setup() {
 exit 0
 STUB
     chmod +x "${STUB_BIN_DIR}/docker"
+
+    # Create a stub "jq" for testing - outputs empty JSON for reads
+    cat > "${STUB_BIN_DIR}/jq" <<'STUB'
+#!/usr/bin/env bash
+# Stub jq for testing - outputs empty JSON for reads
+echo "{}"
+STUB
+    chmod +x "${STUB_BIN_DIR}/jq"
+
     export PATH="${STUB_BIN_DIR}:${PATH}"
 }
 

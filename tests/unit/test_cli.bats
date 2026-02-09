@@ -74,3 +74,53 @@ load test_helpers
     default_resolved=$(env -u JAILED_CONFIG_DIR bash -c 'echo "${JAILED_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/jailed}"')
     [ "$default_resolved" != "$JAILED_CONFIG_DIR" ]
 }
+
+# ---------------------------------------------------------------------------
+# jailed help shows new commands
+# ---------------------------------------------------------------------------
+
+@test "jailed help mentions attach command" {
+    run jailed help
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"attach"* ]]
+}
+
+@test "jailed help mentions detach command" {
+    run jailed help
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"detach"* ]]
+}
+
+@test "jailed help mentions ls command" {
+    run jailed help
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"ls"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# jailed ls with no running container
+# ---------------------------------------------------------------------------
+
+@test "jailed ls shows no containers when none running" {
+    run jailed ls
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"No running containers"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# jailed attach validation
+# ---------------------------------------------------------------------------
+
+@test "jailed attach with no args exits with error" {
+    run jailed attach
+    [ "$status" -ne 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# jailed detach validation
+# ---------------------------------------------------------------------------
+
+@test "jailed detach with no args exits with error" {
+    run jailed detach
+    [ "$status" -ne 0 ]
+}

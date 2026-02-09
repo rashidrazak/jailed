@@ -987,7 +987,7 @@ jailed - Secure AI coding assistant container
 Usage:
   jailed [path...]                    Start container with one or more projects
   jailed attach <path>                Attach project to running container (mutagen only)
-  jailed detach <project-name>        Remove project from running container
+  jailed detach <project-name>        Detach project and remove files from container
   jailed shell [project-name]         Reconnect to running container shell
   jailed stop                         Stop container and clean up all resources
   jailed ls                           List running container and attached projects

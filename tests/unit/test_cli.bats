@@ -91,6 +91,12 @@ load test_helpers
     [[ "$output" == *"detach"* ]]
 }
 
+@test "jailed help describes detach as removing files from container" {
+    run jailed help
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"detach"*"remove files from container"* ]]
+}
+
 @test "jailed help mentions ls command" {
     run jailed help
     [ "$status" -eq 0 ]

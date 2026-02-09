@@ -300,9 +300,17 @@ cmd_run() {
             build_run_args "$PROJECT_DIR" "$container_name" run_args
             "$RUNTIME" "${run_args[@]}"
         else
-            # Attach to the running container interactively
+            # Attach to the running container interactively.
+            # Trap ensures cleanup on unexpected exit (e.g. Ctrl+C).
             trap 'stop_mutagen_sync "$container_name"' EXIT
             "$RUNTIME" exec -it "$container_name" gosu "$USERNAME" zsh -l
+
+            # Normal exit: clean up explicitly, then clear the trap.
+            # (The trap references a local variable that goes out of scope
+            # after this function returns, which causes an unbound variable
+            # error with set -u if the trap fires at script exit.)
+            stop_mutagen_sync "$container_name"
+            trap - EXIT
             "$RUNTIME" stop "$container_name" 2>/dev/null || true
         fi
     else

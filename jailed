@@ -612,7 +612,7 @@ cmd_run() {
         "$RUNTIME" "${run_args[@]}" sleep infinity
 
         # Set cleanup trap before starting syncs (in case of interruption)
-        trap '"$RUNTIME" stop "$container_name" 2>/dev/null || true' EXIT
+        trap 'stop_all_mutagen_syncs "$container_name"; "$RUNTIME" stop "$container_name" 2>/dev/null || true; delete_state_file' EXIT
 
         # Start mutagen sync for each project
         local mutagen_failed=false

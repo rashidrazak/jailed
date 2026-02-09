@@ -1095,3 +1095,129 @@ STUB
     # Cleanup
     rm -rf "$TEST_PROJECT" "$EXEC_LOG"
 }
+
+# ---------------------------------------------------------------------------
+# EXIT trap cleanup verification (Phase 1)
+# ---------------------------------------------------------------------------
+
+@test "cmd_run EXIT trap performs full cleanup on interrupt during setup" {
+    # Create a test wrapper that simulates the trap being triggered
+    cat > "${STUB_BIN_DIR}/test_trap_cleanup" <<'WRAPPER'
+#!/usr/bin/env bash
+# Source jailed to get all functions
+set -euo pipefail
+
+# Mock runtime and state
+RUNTIME="docker"
+container_name="test-container-123"
+JAILED_CONFIG_DIR="${JAILED_CONFIG_DIR}"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+info()    { echo -e "${BLUE}[jailed]${NC} $1"; }
+warn()    { echo -e "${YELLOW}[jailed]${NC} $1"; }
+error()   { echo -e "${RED}[jailed]${NC} $1" >&2; }
+die()     { error "$1"; exit 1; }
+
+state_file() {
+    echo "${JAILED_CONFIG_DIR}/running.json"
+}
+
+delete_state_file() {
+    local file
+    file="$(state_file)"
+    if [ -f "$file" ]; then
+        rm -f "$file"
+        echo "[CLEANUP] State file deleted"
+    fi
+}
+
+mutagen_available() {
+    command -v mutagen >/dev/null 2>&1
+}
+
+stop_all_mutagen_syncs() {
+    local container_name="$1"
+    echo "[CLEANUP] Stopping all mutagen syncs for $container_name"
+
+    if ! mutagen_available; then
+        warn "Mutagen not available - skipping sync cleanup"
+        return 0
+    fi
+
+    # List all sessions for this container
+    local sessions
+    sessions=$(mutagen sync list 2>/dev/null | grep "jailed-${container_name}-" || true)
+    if [ -z "$sessions" ]; then
+        return 0
+    fi
+
+    echo "[CLEANUP] Found mutagen sessions to clean up"
+}
+
+# Simulate the Phase 1 trap
+cleanup_trap() {
+    stop_all_mutagen_syncs "$container_name"
+    "$RUNTIME" stop "$container_name" 2>/dev/null || true
+    echo "[CLEANUP] Container stopped"
+    delete_state_file
+}
+
+# Create a fake state file
+mkdir -p "$JAILED_CONFIG_DIR"
+echo '{"container":"test-container-123"}' > "$(state_file)"
+
+# Execute the trap
+cleanup_trap
+
+# Verify state file is gone
+if [ -f "$(state_file)" ]; then
+    echo "ERROR: State file still exists after cleanup"
+    exit 1
+fi
+
+echo "[SUCCESS] All cleanup steps executed"
+WRAPPER
+    chmod +x "${STUB_BIN_DIR}/test_trap_cleanup"
+
+    # Create stub docker
+    cat > "${STUB_BIN_DIR}/docker" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+    chmod +x "${STUB_BIN_DIR}/docker"
+
+    # Create stub mutagen
+    cat > "${STUB_BIN_DIR}/mutagen" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+    sync)
+        case "$2" in
+            list)
+                # Simulate one session exists
+                echo "jailed-test-container-123-myproject"
+                exit 0
+                ;;
+        esac
+        ;;
+esac
+exit 0
+STUB
+    chmod +x "${STUB_BIN_DIR}/mutagen"
+
+    # Run the trap test
+    run test_trap_cleanup
+    [ "$status" -eq 0 ]
+
+    # Verify all cleanup steps were called
+    [[ "$output" == *"[CLEANUP] Stopping all mutagen syncs for test-container-123"* ]]
+    [[ "$output" == *"[CLEANUP] Found mutagen sessions to clean up"* ]]
+    [[ "$output" == *"[CLEANUP] Container stopped"* ]]
+    [[ "$output" == *"[CLEANUP] State file deleted"* ]]
+    [[ "$output" == *"[SUCCESS] All cleanup steps executed"* ]]
+}

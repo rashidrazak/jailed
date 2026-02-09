@@ -85,6 +85,9 @@ Optional but recommended:
 - **Mutagen** -- for high-performance bidirectional file sync (especially on macOS and Windows). If mutagen is not found, jailed falls back to bind mounts automatically.
   - macOS: `brew install mutagen-io/mutagen/mutagen`
   - Linux: download from [mutagen releases](https://github.com/mutagen-io/mutagen/releases)
+- **jq** -- required for multi-project features (`attach`, `detach`, `ls`)
+  - macOS: `brew install jq`
+  - Linux: `apt install jq` / `dnf install jq`
 
 ---
 
@@ -128,7 +131,12 @@ jailed .
 
 # Launch with a specific project directory
 jailed /path/to/project
+
+# Launch with multiple projects
+jailed /path/to/projectA /path/to/projectB
 ```
+
+Projects are mounted at `/workspace/<project-name>` inside the container.
 
 ### Build the Image
 
@@ -169,6 +177,38 @@ jailed --sync bind
 jailed --testcontainers
 ```
 
+### Multi-Project Workflow
+
+Work on multiple host projects in a single container:
+
+```bash
+# Start with two projects
+jailed /path/to/frontend /path/to/backend
+
+# In another terminal, attach a third project to the running container
+jailed attach /path/to/shared-libs
+
+# List all attached projects
+jailed ls
+
+# Detach a project when no longer needed
+jailed detach shared-libs
+```
+
+Inside the container, each project is available at `/workspace/<dirname>`:
+
+```
+/workspace/
+  frontend/
+  backend/
+  shared-libs/
+```
+
+**Notes:**
+- Hot-attach (`jailed attach`) requires mutagen sync mode (the default). Bind mount containers must pass all project paths at launch.
+- `jailed attach` opens a new shell session in the attached project directory.
+- Detaching a project removes the sync but does not stop the container.
+
 ### Other Commands
 
 ```bash
@@ -177,6 +217,15 @@ jailed version
 
 # Show help
 jailed help
+
+# List running container and attached projects
+jailed ls
+
+# Attach another project to a running container (mutagen only)
+jailed attach /path/to/another-project
+
+# Detach a project from the running container
+jailed detach project-name
 ```
 
 ### Combining Flags
@@ -257,6 +306,7 @@ All persistent data is stored under a single config directory:
 
 ```
 ~/.config/jailed/
+  running.json           # Active container state (auto-managed)
   agents/
     claude/              # Claude Code config and auth (~/.claude)
     opencode/            # OpenCode config (~/.config/opencode)
@@ -317,7 +367,7 @@ When using Podman, rootless mode provides additional isolation:
 ### Blast Radius
 
 - `rm -rf /` inside the container destroys only the container filesystem. Host files remain at the last-synced state.
-- `rm -rf /workspace` affects only the synced project files, which is the intended writable scope.
+- `rm -rf /workspace` affects only the synced project files. Each project is mounted at `/workspace/<dirname>`.
 - No host SSH keys, GPG keys, or other credentials are mounted unless explicitly configured.
 
 ### Socket Mounting
@@ -442,7 +492,7 @@ Mutagen provides bidirectional file synchronization with near-native filesystem 
 - Any environment where bind mount I/O is a bottleneck
 
 **How it works:**
-- jailed starts the container, then creates a mutagen sync session between the host project directory and `/workspace` inside the container.
+- jailed starts the container, then creates a mutagen sync session for each project directory, syncing to `/workspace/<project-name>` inside the container.
 - Changes propagate bidirectionally with minimal latency.
 - The sync session is automatically terminated when the container exits.
 - The `.git` directory is ignored by mutagen to avoid conflicts.
@@ -578,6 +628,36 @@ systemctl --user enable --now podman.socket
 
 # Verify
 podman info
+```
+
+### Hot-attach fails with "requires mutagen sync"
+
+```
+Hot-attach requires mutagen sync mode. Current container uses bind mounts.
+```
+
+**Solution:** Restart the container with mutagen sync (the default), or pass all project paths at launch:
+
+```bash
+# Option 1: Use mutagen (default)
+jailed /path/to/projectA
+
+# Option 2: Pass all paths upfront with bind mode
+jailed --sync bind /path/to/projectA /path/to/projectB
+```
+
+### jq not found
+
+```
+jq is required for this command.
+```
+
+**Solution:** Install jq:
+
+```bash
+brew install jq        # macOS
+apt install jq         # Debian/Ubuntu
+dnf install jq         # Fedora/RHEL
 ```
 
 ---

@@ -816,6 +816,34 @@ cmd_detach() {
     success "Detached '$project_name' from $container_name"
 }
 
+# --- List command (show running container and projects) ---
+cmd_ls() {
+    if [ ! -f "$STATE_FILE" ]; then
+        info "No running containers"
+        return
+    fi
+    require_jq
+    local container_name; container_name=$(get_running_container)
+
+    if ! is_container_alive "$container_name"; then
+        warn "Container '$container_name' is no longer running. Cleaning up..."
+        delete_state_file
+        info "No running containers"
+        return
+    fi
+
+    local runtime sync
+    runtime=$(jq -r '.runtime' "$STATE_FILE")
+    sync=$(jq -r '.sync' "$STATE_FILE")
+
+    echo "Container: $container_name"
+    echo "Runtime:   $runtime"
+    echo "Sync:      $sync"
+    echo ""
+    echo "Projects:"
+    jq -r '.projects | to_entries[] | "  \(.key) → \(.value)"' "$STATE_FILE"
+}
+
 # --- Help ---
 cmd_help() {
     cat <<'EOF'
@@ -825,6 +853,7 @@ Usage:
   jailed [path]                       Start container (default: current directory)
   jailed attach <path> [--container]  Hot-attach additional project to running container
   jailed detach <project-name>        Remove project from running container
+  jailed ls                           List running container and attached projects
   jailed build [--name USER]          Build/rebuild the container image
   jailed version                      Show version
   jailed help                         Show this help
@@ -891,6 +920,7 @@ main() {
         build)   shift; cmd_build "$@" ;;
         attach)  shift; cmd_attach "$@" ;;
         detach)  shift; cmd_detach "$@" ;;
+        ls)      cmd_ls ;;
         version) cmd_version ;;
         help|--help|-h) cmd_help ;;
         *)       cmd_run "$@" ;;

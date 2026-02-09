@@ -177,6 +177,52 @@ delete_state_file() {
     rm -f "$STATE_FILE"
 }
 
+# --- Podman + Mutagen shim setup ---
+# Sets up environment for mutagen to work with Podman on macOS/Linux:
+# 1. Exports DOCKER_HOST pointing to the Podman socket
+# 2. Creates a docker->podman symlink shim for mutagen's CLI calls
+# 3. Restarts mutagen daemon to pick up the new environment
+setup_podman_mutagen_shim() {
+    local podman_socket=""
+    # Try platform-appropriate socket paths
+    if [ "$(uname)" = "Darwin" ]; then
+        # macOS: Podman runs in a VM, socket is in user's data dir
+        for candidate in \
+            "$HOME/.local/share/containers/podman/machine/podman.sock" \
+            "$(podman machine inspect --format '{{.ConnectionInfo.PodmanSocket.Path}}' 2>/dev/null)"; do
+            if [ -S "$candidate" ]; then
+                podman_socket="$candidate"
+                break
+            fi
+        done
+    else
+        # Linux: standard XDG runtime dir
+        local candidate="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock"
+        if [ -S "$candidate" ]; then
+            podman_socket="$candidate"
+        fi
+    fi
+
+    if [ -n "$podman_socket" ]; then
+        export DOCKER_HOST="unix://${podman_socket}"
+    else
+        warn "Podman socket not found. Mutagen sync may fail."
+    fi
+
+    # Mutagen shells out to "docker" CLI. Create a temporary shim
+    # so it finds podman when docker isn't installed.
+    if ! command -v docker >/dev/null 2>&1; then
+        local shim_dir
+        shim_dir=$(mktemp -d)
+        ln -s "$(command -v podman)" "$shim_dir/docker"
+        export PATH="$shim_dir:$PATH"
+    fi
+
+    # Mutagen runs a long-lived daemon that inherits PATH at startup.
+    # Restart it so it picks up DOCKER_HOST and the docker shim above.
+    mutagen daemon stop 2>/dev/null || true
+}
+
 # --- Image check ---
 image_exists() {
     "$RUNTIME" image inspect "$IMAGE_NAME" >/dev/null 2>&1
@@ -358,44 +404,7 @@ cmd_run() {
     # For Podman with mutagen: set DOCKER_HOST to the Podman socket path
     # so mutagen can use it as a Docker-compatible endpoint
     if [ "$RUNTIME" = "podman" ] && [ "$SYNC_STRATEGY" = "mutagen" ]; then
-        local podman_socket=""
-        # Try platform-appropriate socket paths
-        if [ "$(uname)" = "Darwin" ]; then
-            # macOS: Podman runs in a VM, socket is in user's data dir
-            for candidate in \
-                "$HOME/.local/share/containers/podman/machine/podman.sock" \
-                "$(podman machine inspect --format '{{.ConnectionInfo.PodmanSocket.Path}}' 2>/dev/null)"; do
-                if [ -S "$candidate" ]; then
-                    podman_socket="$candidate"
-                    break
-                fi
-            done
-        else
-            # Linux: standard XDG runtime dir
-            local candidate="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock"
-            if [ -S "$candidate" ]; then
-                podman_socket="$candidate"
-            fi
-        fi
-
-        if [ -n "$podman_socket" ]; then
-            export DOCKER_HOST="unix://${podman_socket}"
-        else
-            warn "Podman socket not found. Mutagen sync may fail."
-        fi
-
-        # Mutagen shells out to "docker" CLI. Create a temporary shim
-        # so it finds podman when docker isn't installed.
-        if ! command -v docker >/dev/null 2>&1; then
-            local shim_dir
-            shim_dir=$(mktemp -d)
-            ln -s "$(command -v podman)" "$shim_dir/docker"
-            export PATH="$shim_dir:$PATH"
-        fi
-
-        # Mutagen runs a long-lived daemon that inherits PATH at startup.
-        # Restart it so it picks up DOCKER_HOST and the docker shim above.
-        mutagen daemon stop 2>/dev/null || true
+        setup_podman_mutagen_shim
     fi
 
     local run_args=()

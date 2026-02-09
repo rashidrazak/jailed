@@ -18,6 +18,7 @@ if [ "$TARGET_UID" != "$CURRENT_UID" ]; then
 fi
 
 chown -R "$USERNAME:$USERNAME" "/home/$USERNAME" 2>/dev/null || true
+chown "$USERNAME:$USERNAME" /workspace 2>/dev/null || true
 
 # --- Docker/Podman socket permissions ---
 if [ -S /var/run/docker.sock ]; then
@@ -32,4 +33,9 @@ fi
 export HOME="/home/$USERNAME"
 export USER="$USERNAME"
 
-exec gosu "$USERNAME" zsh -l
+# Use CMD if provided (e.g. "sleep infinity" for mutagen mode), otherwise default to shell
+if [ $# -gt 0 ]; then
+    exec gosu "$USERNAME" "$@"
+else
+    exec gosu "$USERNAME" zsh -l
+fi

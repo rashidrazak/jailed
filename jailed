@@ -137,8 +137,14 @@ build_run_args() {
     local container_name="$2"
     local -n _args=$3
 
+    # Mutagen mode runs detached; bind mode runs interactive
+    local run_flags="-it"
+    if [ "$SYNC_STRATEGY" = "mutagen" ]; then
+        run_flags="-d"
+    fi
+
     _args=(
-        run -it --rm
+        run $run_flags --rm
         --name "$container_name"
         --hostname "jailed"
         -e "HOST_UID=$(id -u)"
@@ -229,10 +235,44 @@ cmd_run() {
     # For Podman with mutagen: set DOCKER_HOST to the Podman socket path
     # so mutagen can use it as a Docker-compatible endpoint
     if [ "$RUNTIME" = "podman" ] && [ "$SYNC_STRATEGY" = "mutagen" ]; then
-        local podman_socket="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock"
-        if [ -S "$podman_socket" ]; then
-            export DOCKER_HOST="unix://${podman_socket}"
+        local podman_socket=""
+        # Try platform-appropriate socket paths
+        if [ "$(uname)" = "Darwin" ]; then
+            # macOS: Podman runs in a VM, socket is in user's data dir
+            for candidate in \
+                "$HOME/.local/share/containers/podman/machine/podman.sock" \
+                "$(podman machine inspect --format '{{.ConnectionInfo.PodmanSocket.Path}}' 2>/dev/null)"; do
+                if [ -S "$candidate" ]; then
+                    podman_socket="$candidate"
+                    break
+                fi
+            done
+        else
+            # Linux: standard XDG runtime dir
+            local candidate="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock"
+            if [ -S "$candidate" ]; then
+                podman_socket="$candidate"
+            fi
         fi
+
+        if [ -n "$podman_socket" ]; then
+            export DOCKER_HOST="unix://${podman_socket}"
+        else
+            warn "Podman socket not found. Mutagen sync may fail."
+        fi
+
+        # Mutagen shells out to "docker" CLI. Create a temporary shim
+        # so it finds podman when docker isn't installed.
+        if ! command -v docker >/dev/null 2>&1; then
+            local shim_dir
+            shim_dir=$(mktemp -d)
+            ln -s "$(command -v podman)" "$shim_dir/docker"
+            export PATH="$shim_dir:$PATH"
+        fi
+
+        # Mutagen runs a long-lived daemon that inherits PATH at startup.
+        # Restart it so it picks up DOCKER_HOST and the docker shim above.
+        mutagen daemon stop 2>/dev/null || true
     fi
 
     local run_args=()
@@ -246,26 +286,14 @@ cmd_run() {
 
     # Start container
     if [ "$SYNC_STRATEGY" = "mutagen" ]; then
-        # For mutagen: start container detached, start sync, then attach
-        "$RUNTIME" "${run_args[@]}" -- sleep infinity &
-        local container_pid=$!
-
-        # Wait for container to be running
-        local retries=0
-        while ! "$RUNTIME" inspect "$container_name" >/dev/null 2>&1; do
-            sleep 0.5
-            retries=$((retries + 1))
-            if [ $retries -gt 20 ]; then
-                die "Container failed to start"
-            fi
-        done
+        # For mutagen: start container detached (-d), start sync, then attach
+        "$RUNTIME" "${run_args[@]}" sleep infinity
 
         # Start mutagen sync
         if ! start_mutagen_sync "$PROJECT_DIR" "$container_name"; then
             # Fallback already handled inside start_mutagen_sync (sets SYNC_STRATEGY=bind)
             # Need to restart with bind mount
             "$RUNTIME" stop "$container_name" 2>/dev/null || true
-            wait $container_pid 2>/dev/null || true
 
             # Re-run with bind mount
             run_args=()

@@ -544,7 +544,7 @@ cmd_run() {
     existing_container=$(get_running_container)
     if [ -n "$existing_container" ]; then
         if is_container_alive "$existing_container"; then
-            die "Container already running: $existing_container. Use 'jailed attach <path>' to add more projects."
+            die "Container already running: $existing_container. Use 'jailed shell' to reconnect or 'jailed stop' to shut down."
         else
             warn "Stale state file detected. Cleaning up..."
             delete_state_file
@@ -683,33 +683,35 @@ cmd_run() {
             fi
 
             # Run with bind mounts (interactive)
-            trap 'delete_state_file' EXIT
-            "$RUNTIME" "${run_args[@]}"
-            delete_state_file
+            # Phase 2: Clear trap before shell (container persists)
             trap - EXIT
+            "$RUNTIME" "${run_args[@]}"
+
+            # Shell exited - container still running
+            info "Container still running. Use 'jailed shell' to reconnect or 'jailed stop' to shut down."
         else
             # Mutagen syncs started successfully
             # Write state file
             write_state_file "$container_name" projects_map
 
             # Attach to the running container interactively
-            # Replace trap with full cleanup (now that syncs are established)
-            trap 'stop_all_mutagen_syncs "$container_name"; delete_state_file; "$RUNTIME" stop "$container_name" 2>/dev/null || true' EXIT
+            # Phase 2: Clear trap before shell (container persists)
+            trap - EXIT
             "$RUNTIME" exec -it "$container_name" gosu "$USERNAME" zsh -l
 
-            # Normal exit: clean up explicitly, then clear the trap
-            stop_all_mutagen_syncs "$container_name"
-            delete_state_file
-            "$RUNTIME" stop "$container_name" 2>/dev/null || true
-            trap - EXIT
+            # Shell exited - container still running
+            info "Container still running. Use 'jailed shell' to reconnect or 'jailed stop' to shut down."
         fi
     else
-        # For bind mount: write state, run directly (interactive), cleanup on exit
+        # For bind mount: write state, run directly (interactive)
         write_state_file "$container_name" projects_map
-        trap 'delete_state_file' EXIT
-        "$RUNTIME" "${run_args[@]}"
-        delete_state_file
+
+        # Phase 2: No trap - container persists after shell exit
         trap - EXIT
+        "$RUNTIME" "${run_args[@]}"
+
+        # Shell exited - container still running
+        info "Container still running. Use 'jailed shell' to reconnect or 'jailed stop' to shut down."
     fi
 }
 
@@ -1054,6 +1056,7 @@ main() {
 
     case "$command" in
         build)   shift; cmd_build "$@" ;;
+        run)     shift; cmd_run "$@" ;;
         attach)  shift; cmd_attach "$@" ;;
         detach)  shift; cmd_detach "$@" ;;
         shell)   shift; cmd_shell "$@" ;;

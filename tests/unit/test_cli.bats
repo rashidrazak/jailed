@@ -894,3 +894,204 @@ STUB
     # State file should be deleted
     [ ! -f "$JAILED_CONFIG_DIR/running.json" ]
 }
+
+# ---------------------------------------------------------------------------
+# jailed run persistent container tests
+# ---------------------------------------------------------------------------
+
+@test "jailed run fails when container already running" {
+    # Create state file with a running container
+    mkdir -p "$JAILED_CONFIG_DIR"
+    cat > "$JAILED_CONFIG_DIR/running.json" <<'JSON'
+{
+    "container": "jailed-existing",
+    "runtime": "docker",
+    "sync": "bind",
+    "projects": {
+        "myproject": "/tmp/test-project"
+    }
+}
+JSON
+
+    # Create stub docker that reports container as running
+    cat > "${STUB_BIN_DIR}/docker" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+    inspect)
+        # Container is alive
+        exit 0
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+STUB
+    chmod +x "${STUB_BIN_DIR}/docker"
+
+    # Create minimal test directory
+    TEST_PROJECT="${TMPDIR}/testproject1"
+    mkdir -p "$TEST_PROJECT"
+
+    # Run should fail with already-running error
+    run jailed --runtime docker run "$TEST_PROJECT"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"Container already running: jailed-existing"* ]]
+    [[ "$output" == *"Use 'jailed shell' to reconnect"* ]]
+
+    # Cleanup
+    rm -rf "$TEST_PROJECT"
+}
+
+@test "jailed run cleans up stale state when container is dead" {
+    # Create state file with a dead container
+    mkdir -p "$JAILED_CONFIG_DIR"
+    cat > "$JAILED_CONFIG_DIR/running.json" <<'JSON'
+{
+    "container": "jailed-dead",
+    "runtime": "docker",
+    "sync": "bind",
+    "projects": {
+        "myproject": "/tmp/test-project"
+    }
+}
+JSON
+
+    # Create stub docker that reports container as not running
+    EXEC_COUNT_FILE="${TMPDIR}/docker_exec_count"
+    echo "0" > "$EXEC_COUNT_FILE"
+
+    cat > "${STUB_BIN_DIR}/docker" <<STUB
+#!/usr/bin/env bash
+COUNT_FILE="$EXEC_COUNT_FILE"
+
+case "\$1" in
+    inspect)
+        # First call: check if old container is alive (it's not)
+        count=\$(cat "\$COUNT_FILE")
+        if [ "\$count" -eq 0 ]; then
+            count=\$((count + 1))
+            echo "\$count" > "\$COUNT_FILE"
+            exit 1  # Old container is dead
+        fi
+        # Subsequent calls for new container
+        exit 0
+        ;;
+    run)
+        # Container start - record that we were called
+        echo "run" > "${TMPDIR}/docker_run_called"
+        exit 0
+        ;;
+    exec)
+        # Shell exec - just exit immediately
+        exit 0
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+STUB
+    chmod +x "${STUB_BIN_DIR}/docker"
+
+    # Create minimal test directory
+    TEST_PROJECT="${TMPDIR}/testproject2"
+    mkdir -p "$TEST_PROJECT"
+
+    # Run should detect stale state, clean up, and start new container
+    run jailed --runtime docker run "$TEST_PROJECT"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Stale state file detected"* ]]
+    [[ "$output" == *"Cleaning up"* ]]
+    [[ "$output" == *"Starting jailed container"* ]]
+
+    # Cleanup
+    rm -rf "$TEST_PROJECT" "$EXEC_COUNT_FILE"
+    rm -f "${TMPDIR}/docker_run_called"
+}
+
+@test "jailed run bind mode shows reconnect hint on shell exit" {
+    # Create stub docker
+    EXEC_LOG="${TMPDIR}/docker_exec_bind"
+    cat > "${STUB_BIN_DIR}/docker" <<STUB
+#!/usr/bin/env bash
+case "\$1" in
+    inspect)
+        # Container check passes
+        exit 0
+        ;;
+    run)
+        # Container runs, then exits immediately (simulating shell exit)
+        echo "run \$@" > "$EXEC_LOG"
+        exit 0
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+STUB
+    chmod +x "${STUB_BIN_DIR}/docker"
+
+    # Create minimal test directory
+    TEST_PROJECT="${TMPDIR}/testproject3"
+    mkdir -p "$TEST_PROJECT"
+
+    # Run in bind mode - should show reconnect hint
+    run jailed --runtime docker --sync bind run "$TEST_PROJECT"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Container still running"* ]]
+    [[ "$output" == *"Use 'jailed shell' to reconnect"* ]]
+
+    # State file should still exist (container persists)
+    [ -f "$JAILED_CONFIG_DIR/running.json" ]
+
+    # Cleanup
+    rm -rf "$TEST_PROJECT" "$EXEC_LOG"
+}
+
+@test "jailed run mutagen mode shows reconnect hint on shell exit" {
+    # Create stub docker
+    EXEC_LOG="${TMPDIR}/docker_exec_mutagen"
+    cat > "${STUB_BIN_DIR}/docker" <<STUB
+#!/usr/bin/env bash
+case "\$1" in
+    inspect)
+        exit 0
+        ;;
+    run)
+        # Start detached container
+        echo "run \$@" > "$EXEC_LOG"
+        exit 0
+        ;;
+    exec)
+        # Shell exec - exit immediately (simulating shell exit)
+        exit 0
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+STUB
+    chmod +x "${STUB_BIN_DIR}/docker"
+
+    # Create stub mutagen that succeeds
+    cat > "${STUB_BIN_DIR}/mutagen" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+    chmod +x "${STUB_BIN_DIR}/mutagen"
+
+    # Create minimal test directory
+    TEST_PROJECT="${TMPDIR}/testproject4"
+    mkdir -p "$TEST_PROJECT"
+
+    # Run in mutagen mode - should show reconnect hint
+    run jailed --runtime docker --sync mutagen run "$TEST_PROJECT"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Container still running"* ]]
+    [[ "$output" == *"Use 'jailed shell' to reconnect"* ]]
+
+    # State file should still exist (container persists)
+    [ -f "$JAILED_CONFIG_DIR/running.json" ]
+
+    # Cleanup
+    rm -rf "$TEST_PROJECT" "$EXEC_LOG"
+}

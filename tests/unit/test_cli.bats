@@ -97,6 +97,18 @@ load test_helpers
     [[ "$output" == *"ls"* ]]
 }
 
+@test "jailed help mentions shell command" {
+    run jailed help
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"shell"* ]]
+}
+
+@test "jailed help mentions stop command" {
+    run jailed help
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"stop"* ]]
+}
+
 # ---------------------------------------------------------------------------
 # jailed ls with no running container
 # ---------------------------------------------------------------------------
@@ -624,4 +636,261 @@ STUB
 
     # Cleanup
     rm -f "$EXEC_LOG"
+}
+
+# ---------------------------------------------------------------------------
+# jailed stop command tests
+# ---------------------------------------------------------------------------
+
+@test "jailed stop shows nothing to stop when no running container" {
+    # State file doesn't exist
+    run jailed --runtime docker stop
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Nothing to stop"* ]]
+}
+
+@test "jailed stop cleans up stale state when container is dead" {
+    # Create state file with a dead container
+    mkdir -p "$JAILED_CONFIG_DIR"
+    cat > "$JAILED_CONFIG_DIR/running.json" <<'JSON'
+{
+    "container": "jailed-dead",
+    "projects": {
+        "myproject": "/tmp/test-project"
+    }
+}
+JSON
+
+    # Create stub docker that reports container as not running
+    cat > "${STUB_BIN_DIR}/docker" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+    inspect)
+        # Container doesn't exist or isn't running
+        exit 1
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+STUB
+    chmod +x "${STUB_BIN_DIR}/docker"
+
+    # Run stop - should detect dead container and clean up
+    run jailed --runtime docker stop
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"already stopped"* ]]
+    [[ "$output" == *"Cleaning up state"* ]]
+
+    # State file should be deleted
+    [ ! -f "$JAILED_CONFIG_DIR/running.json" ]
+}
+
+@test "jailed stop terminates mutagen syncs in best-effort mode" {
+    # Create state file with a running container
+    mkdir -p "$JAILED_CONFIG_DIR"
+    cat > "$JAILED_CONFIG_DIR/running.json" <<'JSON'
+{
+    "container": "jailed-test",
+    "projects": {
+        "project1": "/tmp/project1",
+        "project2": "/tmp/project2"
+    }
+}
+JSON
+
+    # Track mutagen calls
+    MUTAGEN_LOG="${TMPDIR}/mutagen_log"
+    cat > "${STUB_BIN_DIR}/mutagen" <<STUB
+#!/usr/bin/env bash
+echo "\$@" >> "$MUTAGEN_LOG"
+exit 0
+STUB
+    chmod +x "${STUB_BIN_DIR}/mutagen"
+
+    # Create stub docker that reports container as running
+    STOP_LOG="${TMPDIR}/docker_stop_log"
+    cat > "${STUB_BIN_DIR}/docker" <<STUB
+#!/usr/bin/env bash
+case "\$1" in
+    inspect)
+        exit 0  # Container is alive
+        ;;
+    stop)
+        echo "\$@" >> "$STOP_LOG"
+        exit 0
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+STUB
+    chmod +x "${STUB_BIN_DIR}/docker"
+
+    # Run stop
+    run jailed --runtime docker stop
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Stopping sync sessions"* ]]
+    [[ "$output" == *"Stopping container"* ]]
+    [[ "$output" == *"Container stopped"* ]]
+
+    # Verify mutagen was called to terminate syncs
+    run cat "$MUTAGEN_LOG"
+    [[ "$output" == *"sync terminate"* ]]
+
+    # Verify container stop was called
+    run cat "$STOP_LOG"
+    [[ "$output" == *"stop jailed-test"* ]]
+
+    # State file should be deleted
+    [ ! -f "$JAILED_CONFIG_DIR/running.json" ]
+
+    # Cleanup
+    rm -f "$MUTAGEN_LOG" "$STOP_LOG"
+}
+
+@test "jailed stop continues even if mutagen fails (lenient)" {
+    # Create state file with a running container
+    mkdir -p "$JAILED_CONFIG_DIR"
+    cat > "$JAILED_CONFIG_DIR/running.json" <<'JSON'
+{
+    "container": "jailed-test",
+    "projects": {
+        "myproject": "/tmp/test-project"
+    }
+}
+JSON
+
+    # Create stub mutagen that fails
+    cat > "${STUB_BIN_DIR}/mutagen" <<'STUB'
+#!/usr/bin/env bash
+exit 1  # All mutagen operations fail
+STUB
+    chmod +x "${STUB_BIN_DIR}/mutagen"
+
+    # Create stub docker
+    STOP_LOG="${TMPDIR}/docker_stop_log_lenient"
+    cat > "${STUB_BIN_DIR}/docker" <<STUB
+#!/usr/bin/env bash
+case "\$1" in
+    inspect)
+        exit 0  # Container is alive
+        ;;
+    stop)
+        echo "stopped" >> "$STOP_LOG"
+        exit 0
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+STUB
+    chmod +x "${STUB_BIN_DIR}/docker"
+
+    # Run stop - should continue despite mutagen failure
+    run jailed --runtime docker stop
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Container stopped"* ]]
+
+    # Container should still be stopped
+    run cat "$STOP_LOG"
+    [ "$output" = "stopped" ]
+
+    # State file should still be deleted
+    [ ! -f "$JAILED_CONFIG_DIR/running.json" ]
+
+    # Cleanup
+    rm -f "$STOP_LOG"
+}
+
+@test "jailed stop continues even if container stop fails (lenient)" {
+    # Create state file with a running container
+    mkdir -p "$JAILED_CONFIG_DIR"
+    cat > "$JAILED_CONFIG_DIR/running.json" <<'JSON'
+{
+    "container": "jailed-test",
+    "projects": {
+        "myproject": "/tmp/test-project"
+    }
+}
+JSON
+
+    # Create stub mutagen that succeeds
+    cat > "${STUB_BIN_DIR}/mutagen" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+    chmod +x "${STUB_BIN_DIR}/mutagen"
+
+    # Create stub docker that fails on stop
+    cat > "${STUB_BIN_DIR}/docker" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+    inspect)
+        exit 0  # Container is alive
+        ;;
+    stop)
+        exit 1  # Stop fails
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+STUB
+    chmod +x "${STUB_BIN_DIR}/docker"
+
+    # Run stop - should continue despite stop failure
+    run jailed --runtime docker stop
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Container stopped"* ]]
+
+    # State file should still be deleted
+    [ ! -f "$JAILED_CONFIG_DIR/running.json" ]
+}
+
+@test "jailed stop sets up Podman shim when RUNTIME=podman" {
+    # Create state file with a running container
+    mkdir -p "$JAILED_CONFIG_DIR"
+    cat > "$JAILED_CONFIG_DIR/running.json" <<'JSON'
+{
+    "container": "jailed-test",
+    "projects": {
+        "myproject": "/tmp/test-project"
+    }
+}
+JSON
+
+    # Create .env file with RUNTIME=podman
+    cat > "$JAILED_CONFIG_DIR/.env" <<'ENV'
+RUNTIME=podman
+ENV
+
+    # Create stub mutagen
+    cat > "${STUB_BIN_DIR}/mutagen" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+    chmod +x "${STUB_BIN_DIR}/mutagen"
+
+    # Create stub podman
+    cat > "${STUB_BIN_DIR}/podman" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+    inspect)
+        exit 0  # Container is alive
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+STUB
+    chmod +x "${STUB_BIN_DIR}/podman"
+
+    # Run stop with RUNTIME=podman
+    run env RUNTIME=podman jailed stop
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Container stopped"* ]]
+
+    # State file should be deleted
+    [ ! -f "$JAILED_CONFIG_DIR/running.json" ]
 }

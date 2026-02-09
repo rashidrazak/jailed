@@ -910,6 +910,45 @@ cmd_shell() {
     fi
 }
 
+# --- Stop command (full container teardown) ---
+cmd_stop() {
+    # 1. Require jq
+    require_jq
+
+    # 2. Get container name from state file
+    local container_name
+    container_name=$(get_running_container)
+
+    if [ -z "$container_name" ]; then
+        info "Nothing to stop."
+        return
+    fi
+
+    # 3. Check if container is alive
+    if ! is_container_alive "$container_name"; then
+        warn "Container '$container_name' already stopped. Cleaning up state..."
+        delete_state_file
+        return
+    fi
+
+    # 4. Stop all mutagen syncs (best-effort, lenient)
+    info "Stopping sync sessions..."
+    if [ "$RUNTIME" = "podman" ]; then
+        setup_podman_mutagen_shim
+    fi
+    stop_all_mutagen_syncs "$container_name"
+
+    # 5. Stop the container
+    info "Stopping container '$container_name'..."
+    "$RUNTIME" stop "$container_name" 2>/dev/null || true
+
+    # 6. Delete state file
+    delete_state_file
+
+    # 7. Success message
+    success "Container stopped."
+}
+
 # --- List command (show running container and projects) ---
 cmd_ls() {
     if [ ! -f "$STATE_FILE" ]; then
@@ -947,6 +986,8 @@ Usage:
   jailed [path...]                    Start container with one or more projects
   jailed attach <path>                Attach project to running container (mutagen only)
   jailed detach <project-name>        Remove project from running container
+  jailed shell [project-name]         Reconnect to running container shell
+  jailed stop                         Stop container and clean up all resources
   jailed ls                           List running container and attached projects
   jailed build [--name USER]          Build/rebuild the container image
   jailed version                      Show version
@@ -1016,6 +1057,7 @@ main() {
         attach)  shift; cmd_attach "$@" ;;
         detach)  shift; cmd_detach "$@" ;;
         shell)   shift; cmd_shell "$@" ;;
+        stop)    cmd_stop ;;
         ls)      cmd_ls ;;
         version) cmd_version ;;
         help|--help|-h) cmd_help ;;

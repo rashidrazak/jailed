@@ -408,3 +408,220 @@ STUB
     # Cleanup
     rm -f "$MUTAGEN_LIST_FILE"
 }
+
+# ---------------------------------------------------------------------------
+# jailed shell command tests
+# ---------------------------------------------------------------------------
+
+@test "jailed shell fails when no running container" {
+    # State file doesn't exist, so no container is running
+    run jailed --runtime docker shell
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"No running container found"* ]]
+}
+
+@test "jailed shell cleans up when container is dead" {
+    # Create state file with a container
+    mkdir -p "$JAILED_CONFIG_DIR"
+    cat > "$JAILED_CONFIG_DIR/running.json" <<'JSON'
+{
+    "container": "jailed-dead",
+    "projects": {
+        "myproject": "/tmp/test-project"
+    }
+}
+JSON
+
+    # Create stub docker that reports container as not running
+    cat > "${STUB_BIN_DIR}/docker" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+    inspect)
+        # Container doesn't exist or isn't running
+        exit 1
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+STUB
+    chmod +x "${STUB_BIN_DIR}/docker"
+
+    # Run shell - should detect dead container and clean up
+    run jailed --runtime docker shell
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"is no longer running"* ]]
+    [[ "$output" == *"Cleaning up"* ]]
+
+    # State file should be deleted
+    [ ! -f "$JAILED_CONFIG_DIR/running.json" ]
+}
+
+@test "jailed shell fails when project name invalid" {
+    # Create state file with a container and one project
+    mkdir -p "$JAILED_CONFIG_DIR"
+    cat > "$JAILED_CONFIG_DIR/running.json" <<'JSON'
+{
+    "container": "jailed-test",
+    "projects": {
+        "myproject": "/tmp/test-project"
+    }
+}
+JSON
+
+    # Create stub docker that reports container as running
+    cat > "${STUB_BIN_DIR}/docker" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+    inspect)
+        # Just exit 0 for alive container
+        exit 0
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+STUB
+    chmod +x "${STUB_BIN_DIR}/docker"
+
+    # Run shell with invalid project name
+    run jailed --runtime docker shell nonexistent
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"Project 'nonexistent' not found"* ]]
+}
+
+@test "jailed shell opens in specific project directory" {
+    # Create state file with a container and one project
+    mkdir -p "$JAILED_CONFIG_DIR"
+    cat > "$JAILED_CONFIG_DIR/running.json" <<'JSON'
+{
+    "container": "jailed-test",
+    "projects": {
+        "myproject": "/tmp/test-project"
+    }
+}
+JSON
+
+    # Create stub docker that records exec commands
+    EXEC_LOG="${TMPDIR}/docker_exec_log"
+    cat > "${STUB_BIN_DIR}/docker" <<STUB
+#!/usr/bin/env bash
+case "\$1" in
+    inspect)
+        # Just exit 0 for alive container
+        exit 0
+        ;;
+    exec)
+        # Record the exec command
+        echo "\$@" >> "$EXEC_LOG"
+        exit 0
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+STUB
+    chmod +x "${STUB_BIN_DIR}/docker"
+
+    # Run shell with specific project
+    run jailed --runtime docker shell myproject
+    [ "$status" -eq 0 ]
+
+    # Verify exec was called with correct directory
+    run cat "$EXEC_LOG"
+    [[ "$output" == *"cd /workspace/myproject"* ]]
+
+    # Cleanup
+    rm -f "$EXEC_LOG"
+}
+
+@test "jailed shell auto-selects when only one project" {
+    # Create state file with a container and exactly one project
+    mkdir -p "$JAILED_CONFIG_DIR"
+    cat > "$JAILED_CONFIG_DIR/running.json" <<'JSON'
+{
+    "container": "jailed-test",
+    "projects": {
+        "onlyproject": "/tmp/only-project"
+    }
+}
+JSON
+
+    # Create stub docker that records exec commands
+    EXEC_LOG="${TMPDIR}/docker_exec_log_auto"
+    cat > "${STUB_BIN_DIR}/docker" <<STUB
+#!/usr/bin/env bash
+case "\$1" in
+    inspect)
+        # Just exit 0 for alive container
+        exit 0
+        ;;
+    exec)
+        # Record the exec command
+        echo "\$@" >> "$EXEC_LOG"
+        exit 0
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+STUB
+    chmod +x "${STUB_BIN_DIR}/docker"
+
+    # Run shell without arguments - should auto-select the only project
+    run jailed --runtime docker shell
+    [ "$status" -eq 0 ]
+
+    # Verify exec was called with the project directory
+    run cat "$EXEC_LOG"
+    [[ "$output" == *"cd /workspace/onlyproject"* ]]
+
+    # Cleanup
+    rm -f "$EXEC_LOG"
+}
+
+@test "jailed shell opens in /workspace when multiple projects" {
+    # Create state file with a container and multiple projects
+    mkdir -p "$JAILED_CONFIG_DIR"
+    cat > "$JAILED_CONFIG_DIR/running.json" <<'JSON'
+{
+    "container": "jailed-test",
+    "projects": {
+        "project1": "/tmp/project1",
+        "project2": "/tmp/project2"
+    }
+}
+JSON
+
+    # Create stub docker that records exec commands
+    EXEC_LOG="${TMPDIR}/docker_exec_log_multi"
+    cat > "${STUB_BIN_DIR}/docker" <<STUB
+#!/usr/bin/env bash
+case "\$1" in
+    inspect)
+        # Just exit 0 for alive container
+        exit 0
+        ;;
+    exec)
+        # Record the exec command
+        echo "\$@" >> "$EXEC_LOG"
+        exit 0
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+STUB
+    chmod +x "${STUB_BIN_DIR}/docker"
+
+    # Run shell without arguments - should open in /workspace
+    run jailed --runtime docker shell
+    [ "$status" -eq 0 ]
+
+    # Verify exec was called WITHOUT cd (just opens in default location)
+    run cat "$EXEC_LOG"
+    [[ "$output" != *"cd /workspace/"* ]] || [[ "$output" == *"exec -it jailed-test gosu"* ]]
+
+    # Cleanup
+    rm -f "$EXEC_LOG"
+}

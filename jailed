@@ -868,6 +868,48 @@ cmd_detach() {
     success "Detached '$project_name' from $container_name"
 }
 
+# --- Shell command (reconnect to running container) ---
+cmd_shell() {
+    local project_name="${1:-}"
+
+    # 1. Require jq
+    require_jq
+
+    # 2. Get container name from state file
+    local container_name
+    container_name=$(get_running_container)
+    [ -z "$container_name" ] && die "No running container found. Start one with 'jailed run'."
+
+    # 3. Validate container is alive
+    if ! is_container_alive "$container_name"; then
+        warn "Container '$container_name' is no longer running. Cleaning up..."
+        delete_state_file
+        die "Container is no longer running. Start a new one with 'jailed run'."
+    fi
+
+    # 4. Determine target directory
+    if [ -n "$project_name" ]; then
+        # Validate project exists in state
+        local project_path
+        project_path=$(jq -r ".projects[\"$project_name\"] // empty" "$STATE_FILE")
+        [ -z "$project_path" ] && die "Project '$project_name' not found. Run 'jailed ls' to see attached projects."
+
+        "$RUNTIME" exec -it "$container_name" gosu "$USERNAME" zsh -c "cd /workspace/$project_name && exec zsh -l"
+    else
+        # No project specified: auto-select if only one, otherwise /workspace
+        local project_count
+        project_count=$(jq '.projects | length' "$STATE_FILE")
+
+        if [ "$project_count" -eq 1 ]; then
+            local only_project
+            only_project=$(jq -r '.projects | keys[0]' "$STATE_FILE")
+            "$RUNTIME" exec -it "$container_name" gosu "$USERNAME" zsh -c "cd /workspace/$only_project && exec zsh -l"
+        else
+            "$RUNTIME" exec -it "$container_name" gosu "$USERNAME" zsh -l
+        fi
+    fi
+}
+
 # --- List command (show running container and projects) ---
 cmd_ls() {
     if [ ! -f "$STATE_FILE" ]; then
@@ -973,6 +1015,7 @@ main() {
         build)   shift; cmd_build "$@" ;;
         attach)  shift; cmd_attach "$@" ;;
         detach)  shift; cmd_detach "$@" ;;
+        shell)   shift; cmd_shell "$@" ;;
         ls)      cmd_ls ;;
         version) cmd_version ;;
         help|--help|-h) cmd_help ;;

@@ -67,6 +67,15 @@ jailed /path/to/your/project
 
 # 3. Authenticate agents inside the container
 claude login
+
+# 4. Exit the shell — the container keeps running
+exit
+
+# 5. Reconnect anytime
+jailed shell
+
+# 6. Shut down when done
+jailed stop
 ```
 
 On first run, if no image is found, jailed will prompt you to build one automatically.
@@ -85,7 +94,7 @@ Optional but recommended:
 - **Mutagen** -- for high-performance bidirectional file sync (especially on macOS and Windows). If mutagen is not found, jailed falls back to bind mounts automatically.
   - macOS: `brew install mutagen-io/mutagen/mutagen`
   - Linux: download from [mutagen releases](https://github.com/mutagen-io/mutagen/releases)
-- **jq** -- required for multi-project features (`attach`, `detach`, `ls`)
+- **jq** -- required for multi-project and lifecycle features (`attach`, `detach`, `shell`, `stop`, `ls`)
   - macOS: `brew install jq`
   - Linux: `apt install jq` / `dnf install jq`
 
@@ -137,6 +146,8 @@ jailed /path/to/projectA /path/to/projectB
 ```
 
 Projects are mounted at `/workspace/<project-name>` inside the container.
+
+**Note:** Exiting the shell (via `exit` or Ctrl+D) leaves the container running. Use `jailed shell` to reconnect or `jailed stop` to shut down.
 
 ### Build the Image
 
@@ -193,6 +204,12 @@ jailed ls
 
 # Detach a project when no longer needed
 jailed detach shared-libs
+
+# Reconnect to a specific project
+jailed shell frontend
+
+# Shut down the container
+jailed stop
 ```
 
 Inside the container, each project is available at `/workspace/<dirname>`:
@@ -207,16 +224,20 @@ Inside the container, each project is available at `/workspace/<dirname>`:
 **Notes:**
 - Hot-attach (`jailed attach`) requires mutagen sync mode (the default). Bind mount containers must pass all project paths at launch.
 - `jailed attach` opens a new shell session in the attached project directory.
-- Detaching a project removes the sync but does not stop the container.
+- Exiting the shell leaves the container running. Use `jailed shell` to reconnect or `jailed stop` to shut down.
+- Detaching a project flushes pending sync changes, terminates the sync session, and removes `/workspace/<project>` from the container.
 
 ### Other Commands
 
 ```bash
-# Show version
-jailed version
+# Reconnect to a running container
+jailed shell
 
-# Show help
-jailed help
+# Reconnect directly into a specific project
+jailed shell my-project
+
+# Shut down the container (stops syncs, removes container)
+jailed stop
 
 # List running container and attached projects
 jailed ls
@@ -224,9 +245,21 @@ jailed ls
 # Attach another project to a running container (mutagen only)
 jailed attach /path/to/another-project
 
-# Detach a project from the running container
+# Detach a project from the running container (removes files from /workspace/<project>)
 jailed detach project-name
+
+# Show version
+jailed version
+
+# Show help
+jailed help
 ```
+
+**Lifecycle Notes:**
+- `jailed shell` auto-selects the project if only one is attached, otherwise opens in `/workspace`.
+- `jailed shell <project-name>` opens a shell in `/workspace/<project-name>`.
+- `jailed stop` terminates all sync sessions, stops the container, and cleans up state.
+- `jailed detach` flushes pending changes, terminates the project's sync session, and removes `/workspace/<project>` from the container.
 
 ### Combining Flags
 
@@ -494,7 +527,7 @@ Mutagen provides bidirectional file synchronization with near-native filesystem 
 **How it works:**
 - jailed starts the container, then creates a mutagen sync session for each project directory, syncing to `/workspace/<project-name>` inside the container.
 - Changes propagate bidirectionally with minimal latency.
-- The sync session is automatically terminated when the container exits.
+- Sync sessions persist across shell exits. They are terminated when you run `jailed stop` or `jailed detach`.
 - The `.git` directory is ignored by mutagen to avoid conflicts.
 
 ```bash
@@ -646,6 +679,42 @@ jailed /path/to/projectA
 jailed --sync bind /path/to/projectA /path/to/projectB
 ```
 
+### Cannot reconnect after exiting shell
+
+```
+No running container found. Start one with 'jailed run'.
+```
+
+**Solution:** The container may have been stopped externally or by `jailed stop`. Start a new session:
+
+```bash
+jailed /path/to/project
+```
+
+If the container is still running but the state file was lost, check manually:
+
+```bash
+docker ps | grep jailed    # or: podman ps | grep jailed
+```
+
+### Detach fails with "Sync flush failed"
+
+```
+Sync flush failed for 'my-project'. Files left intact.
+```
+
+**Solution:** Mutagen could not flush in-flight changes. Check the sync session status and resolve any conflicts:
+
+```bash
+mutagen sync list
+```
+
+Once resolved, retry the detach:
+
+```bash
+jailed detach my-project
+```
+
 ### jq not found
 
 ```
@@ -658,6 +727,51 @@ jq is required for this command.
 brew install jq        # macOS
 apt install jq         # Debian/Ubuntu
 dnf install jq         # Fedora/RHEL
+```
+
+### Container already running
+
+```
+A jailed container is already running.
+```
+
+**Solution:** Either reconnect to the existing container or stop it first:
+
+```bash
+# Reconnect to the running container
+jailed shell
+
+# Or stop the container and start fresh
+jailed stop
+jailed /path/to/project
+```
+
+### Stale state after crash
+
+If jailed crashes or is terminated unexpectedly, stale state may remain.
+
+**Solution:** `jailed run` auto-detects and cleans up stale containers and sync sessions on the next launch. You can also manually clean up:
+
+```bash
+# Stop any running container
+jailed stop
+
+# Or manually terminate stale sync sessions
+mutagen sync terminate --all
+```
+
+### Shell exited but container still running
+
+This is expected behavior. The container persists across shell exits.
+
+**Solution:** Reconnect with `jailed shell` or shut down with `jailed stop`:
+
+```bash
+# Reconnect to the running container
+jailed shell
+
+# Or shut down when done
+jailed stop
 ```
 
 ---

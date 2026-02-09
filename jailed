@@ -674,16 +674,117 @@ cmd_run() {
     fi
 }
 
+# --- Attach command (hot-attach additional project) ---
+cmd_attach() {
+    local project_path="${1:?Usage: jailed attach <path> [--container <name>]}"
+    shift
+
+    local container_override=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --container) container_override="$2"; shift 2 ;;
+            *) die "Unknown option: $1" ;;
+        esac
+    done
+
+    # 1. Check for jq dependency
+    require_jq
+
+    # 2. Get container name (from flag or state file)
+    local container_name="$container_override"
+    if [ -z "$container_name" ]; then
+        container_name=$(get_running_container)
+        if [ -z "$container_name" ]; then
+            die "No running container found. Use --container flag or start a container first with 'jailed run'."
+        fi
+    fi
+
+    # 3. Validate container is alive
+    if ! is_container_alive "$container_name"; then
+        die "Container '$container_name' is not running. Start it with 'jailed run' first."
+    fi
+
+    # 4. Read sync strategy from state file
+    if [ ! -f "$STATE_FILE" ]; then
+        die "State file not found. Cannot determine sync strategy."
+    fi
+
+    local sync_strategy
+    sync_strategy=$(jq -r '.sync // ""' "$STATE_FILE" 2>/dev/null) || die "Failed to read sync strategy from state file"
+
+    if [ "$sync_strategy" != "mutagen" ]; then
+        die "Hot-attach requires mutagen sync. Restart with '--sync mutagen' or pass all project paths at launch."
+    fi
+
+    # 5. Resolve path to absolute and validate
+    if [ ! -d "$project_path" ]; then
+        die "Not a directory: $project_path"
+    fi
+    project_path="$(cd "$project_path" && pwd)"
+
+    # 6. Generate project name (check existing names for deduplication)
+    # Read existing project paths from state file
+    local -a existing_paths=()
+    while IFS= read -r path; do
+        [ -n "$path" ] && existing_paths+=("$path")
+    done < <(jq -r '.projects[]' "$STATE_FILE" 2>/dev/null)
+
+    # Add new path to array for deduplication
+    local -a all_paths=("${existing_paths[@]}" "$project_path")
+
+    # Generate deduplicated names for all paths
+    local -a project_entries=()
+    while IFS= read -r entry; do
+        project_entries+=("$entry")
+    done < <(dedupe_project_names "${all_paths[@]}")
+
+    # Extract the last entry (our new project)
+    local new_project_entry="${project_entries[-1]}"
+    local project_name="${new_project_entry%%=*}"
+
+    info "Attaching project: $project_name"
+    info "  Path: $project_path"
+    info "  Container: $container_name"
+
+    # 7. Create workspace directory in container
+    "$RUNTIME" exec "$container_name" mkdir -p "/workspace/$project_name" || die "Failed to create workspace directory"
+
+    # 8. Set ownership (chown to container user)
+    "$RUNTIME" exec "$container_name" chown "$USERNAME:$USERNAME" "/workspace/$project_name" || die "Failed to set directory ownership"
+
+    # 9. Setup Podman + Mutagen shim if needed
+    if [ "$RUNTIME" = "podman" ]; then
+        setup_podman_mutagen_shim
+    fi
+
+    # 10. Start mutagen sync
+    if ! start_mutagen_sync "$project_path" "$container_name" "$project_name"; then
+        die "Failed to start mutagen sync for project '$project_name'"
+    fi
+
+    # 11. Add project to state file
+    add_project_to_state "$project_name" "$project_path"
+
+    # 12. Success message and open shell in project directory
+    success "Project '$project_name' attached successfully!"
+    info "Opening shell in /workspace/$project_name..."
+    "$RUNTIME" exec -it "$container_name" gosu "$USERNAME" zsh -c "cd /workspace/$project_name && exec zsh -l"
+
+    # 13. On shell exit: container and sync stay alive
+    info "Shell exited. Project remains attached. Container is still running."
+}
+
 # --- Help ---
 cmd_help() {
     cat <<'EOF'
 jailed - Secure AI coding assistant container
 
 Usage:
-  jailed [path]                Start container (default: current directory)
-  jailed build [--name USER]   Build/rebuild the container image
-  jailed version               Show version
-  jailed help                  Show this help
+  jailed [path]                       Start container (default: current directory)
+  jailed attach <path> [--container]  Hot-attach additional project to running container
+  jailed build [--name USER]          Build/rebuild the container image
+  jailed version                      Show version
+  jailed help                         Show this help
 
 Options:
   --runtime <docker|podman>    Container runtime (default: auto-detect)
@@ -745,6 +846,7 @@ main() {
 
     case "$command" in
         build)   shift; cmd_build "$@" ;;
+        attach)  shift; cmd_attach "$@" ;;
         version) cmd_version ;;
         help|--help|-h) cmd_help ;;
         *)       cmd_run "$@" ;;

@@ -668,7 +668,7 @@ cmd_run() {
             # Fallback to bind mode
             warn "Mutagen sync failed. Falling back to bind mode..."
             "$RUNTIME" stop "$container_name" 2>/dev/null || true
-            trap - EXIT
+            clear_cleanup_traps
 
             # Rebuild args with bind mounts (don't mutate global SYNC_STRATEGY)
             run_args=()
@@ -723,7 +723,7 @@ cmd_run() {
 
             # Run with bind mounts (interactive)
             # Phase 2: Clear trap before shell (container persists)
-            trap - EXIT
+            clear_cleanup_traps
             "$RUNTIME" "${run_args[@]}"
 
             # Shell exited - container still running
@@ -750,7 +750,7 @@ cmd_run() {
         write_state_file "$container_name" projects_map
 
         # Phase 2: No trap - container persists after shell exit
-        trap - EXIT
+        clear_cleanup_traps
         "$RUNTIME" "${run_args[@]}"
 
         # Shell exited - container still running

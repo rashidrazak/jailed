@@ -1014,7 +1014,7 @@ STUB
     rm -f "${TMPDIR}/docker_run_called"
 }
 
-@test "jailed run bind mode shows reconnect hint on shell exit" {
+@test "jailed run bind mode auto-removes container on exit" {
     # Create stub docker
     EXEC_LOG="${TMPDIR}/docker_exec_bind"
     cat > "${STUB_BIN_DIR}/docker" <<STUB
@@ -1025,7 +1025,7 @@ case "\$1" in
         exit 0
         ;;
     run)
-        # Container runs, then exits immediately (simulating shell exit)
+        # Container runs with --rm, then exits immediately (simulating shell exit)
         echo "run \$@" > "$EXEC_LOG"
         exit 0
         ;;
@@ -1040,14 +1040,14 @@ STUB
     TEST_PROJECT="${TMPDIR}/testproject3"
     mkdir -p "$TEST_PROJECT"
 
-    # Run in bind mode - should show reconnect hint
+    # Run in bind mode - container auto-removed, no reconnect hint
     run jailed --runtime docker --sync bind run "$TEST_PROJECT"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"Container still running"* ]]
-    [[ "$output" == *"Use 'jailed shell' to reconnect"* ]]
+    [[ "$output" != *"Container still running"* ]]
+    [[ "$output" != *"Use 'jailed shell' to reconnect"* ]]
 
-    # State file should still exist (container persists)
-    [ -f "$JAILED_CONFIG_DIR/running.json" ]
+    # State file should be cleaned up (container removed by --rm)
+    [ ! -f "$JAILED_CONFIG_DIR/running.json" ]
 
     # Cleanup
     rm -rf "$TEST_PROJECT" "$EXEC_LOG"

@@ -165,49 +165,58 @@ STUB
 # REGRESSION TEST: Trap protection active during shell attach
 # ---------------------------------------------------------------------------
 
-@test "cmd_run with mutagen: EXIT trap remains active before shell attach" {
-    # This test verifies that the trap is NOT cleared prematurely
+@test "cmd_run with mutagen: uses signal traps during setup, clears after shell attach" {
+    # Phase 2 behavior: Persistent containers
     #
-    # BROKEN behavior (bug):
-    #   trap - EXIT                  ← Clears trap
-    #   exec -it container shell     ← Unprotected
+    # CORRECT pattern:
+    #   setup_cleanup_traps          ← Protect sync setup (INT/TERM/ERR)
+    #   [start mutagen syncs]
+    #   clear_cleanup_traps          ← Allow persistence
+    #   exec -it container shell     ← Container persists on normal exit
     #
-    # CORRECT behavior:
-    #   trap 'cleanup' EXIT          ← Keeps trap
-    #   exec -it container shell     ← Protected
-    #   cleanup                      ← Explicit cleanup after
+    # WRONG pattern (Phase 1 bug):
+    #   trap - EXIT                  ← Clears trap BEFORE sync setup
+    #   [start mutagen syncs]        ← Unprotected!
+    #   exec -it container shell
 
-    # Read the actual code from jailed script
-    local mutagen_success_section
-    mutagen_success_section=$(sed -n '/# Mutagen syncs started successfully/,/^        fi$/p' "${JAILED_DIR}/jailed")
+    # Read the mutagen mode section from jailed script
+    local mutagen_section
+    mutagen_section=$(sed -n '/# For mutagen: start container detached/,/^        fi$/p' "${JAILED_DIR}/jailed")
 
-    # Check for the BUG pattern: "trap - EXIT" before "exec -it"
-    if echo "$mutagen_success_section" | grep -B2 "exec -it" | grep -q "trap - EXIT"; then
-        echo "REGRESSION DETECTED!"
+    # Check for CORRECT pattern: setup_cleanup_traps is called
+    if ! echo "$mutagen_section" | grep -q "setup_cleanup_traps"; then
+        echo "ERROR: Missing setup_cleanup_traps call in mutagen mode"
         echo ""
-        echo "The trap is cleared BEFORE shell attach, which causes orphaned resources."
+        echo "Expected pattern:"
+        echo "  setup_cleanup_traps    # Before sync setup"
         echo ""
-        echo "Problematic code:"
-        echo "$mutagen_success_section" | grep -B2 -A2 "trap - EXIT"
-        echo ""
-        echo "Expected: Trap should remain active or explicit cleanup should follow shell exit"
         return 1
     fi
 
-    # Verify CORRECT pattern exists: either trap stays active OR explicit cleanup follows
-    if echo "$mutagen_success_section" | grep -q "stop_all_mutagen_syncs"; then
-        # Good: Explicit cleanup is present
-        return 0
-    elif echo "$mutagen_success_section" | grep -B5 "exec -it" | grep -q "trap.*stop_all_mutagen_syncs.*EXIT"; then
-        # Good: Trap remains active with cleanup
-        return 0
-    else
-        echo "WARNING: No cleanup mechanism found after shell exit"
+    # Check for CORRECT pattern: clear_cleanup_traps is called
+    if ! echo "$mutagen_section" | grep -q "clear_cleanup_traps"; then
+        echo "ERROR: Missing clear_cleanup_traps call in mutagen mode"
         echo ""
-        echo "Code section:"
-        echo "$mutagen_success_section"
+        echo "Expected pattern:"
+        echo "  clear_cleanup_traps    # After successful sync, before shell"
+        echo ""
         return 1
     fi
+
+    # Verify setup comes BEFORE clear (proper order)
+    local setup_line clear_line
+    setup_line=$(echo "$mutagen_section" | grep -n "setup_cleanup_traps" | head -1 | cut -d: -f1)
+    clear_line=$(echo "$mutagen_section" | grep -n "clear_cleanup_traps" | head -1 | cut -d: -f1)
+
+    if [ "$setup_line" -ge "$clear_line" ]; then
+        echo "ERROR: setup_cleanup_traps must be called BEFORE clear_cleanup_traps"
+        echo "  setup at line: $setup_line"
+        echo "  clear at line: $clear_line"
+        return 1
+    fi
+
+    # Success: Correct Phase 2 pattern detected
+    return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -376,38 +385,44 @@ STUB
 # CODE PATTERN TEST: Verify trap handling pattern
 # ---------------------------------------------------------------------------
 
-@test "CODE_PATTERN: cmd_run must have cleanup mechanism after shell attach" {
-    # This test enforces the correct pattern at the code level
+@test "CODE_PATTERN: cmd_run uses Phase 2 persistent container pattern" {
+    # Phase 2: Persistent containers pattern
+    #
+    # CORRECT pattern:
+    #   1. setup_cleanup_traps (before sync setup)
+    #   2. clear_cleanup_traps (after successful sync, before shell)
+    #   3. Container persists on normal exit
+    #
+    # This is DIFFERENT from Phase 1 where cleanup happened on all exits
 
     local cmd_run_section
     cmd_run_section=$(sed -n '/^cmd_run()/,/^}/p' "${JAILED_DIR}/jailed")
 
-    # Pattern 1: Explicit cleanup after shell exit
-    # Pattern 2: Trap remains active during shell
-
-    local has_explicit_cleanup=false
-    local has_active_trap=false
-
-    # Check for explicit cleanup pattern (working version)
-    if echo "$cmd_run_section" | grep -A10 "exec -it.*gosu.*zsh" | grep -q "stop_all_mutagen_syncs"; then
-        has_explicit_cleanup=true
+    # Check for setup_cleanup_traps in mutagen mode
+    local has_setup=false
+    if echo "$cmd_run_section" | grep -q "setup_cleanup_traps"; then
+        has_setup=true
     fi
 
-    # Check for active trap pattern
-    if echo "$cmd_run_section" | grep -B5 "exec -it.*gosu.*zsh" | grep -q "trap.*stop_all_mutagen_syncs.*EXIT"; then
-        has_active_trap=true
+    # Check for clear_cleanup_traps before shell attach
+    local has_clear=false
+    if echo "$cmd_run_section" | grep -B5 "exec -it.*gosu.*zsh" | grep -q "clear_cleanup_traps"; then
+        has_clear=true
     fi
 
-    # At least ONE pattern must be present
-    if [ "$has_explicit_cleanup" = false ] && [ "$has_active_trap" = false ]; then
-        echo "REGRESSION: No cleanup mechanism found after shell attach!"
+    # Both must be present for Phase 2 pattern
+    if [ "$has_setup" = false ] || [ "$has_clear" = false ]; then
+        echo "ERROR: Phase 2 persistent container pattern not found!"
         echo ""
-        echo "Required: EITHER"
-        echo "  1. Explicit cleanup after 'exec -it' (stop_all_mutagen_syncs + delete_state_file)"
-        echo "  2. Active EXIT trap during 'exec -it' (trap 'cleanup' EXIT)"
+        echo "Required pattern:"
+        echo "  1. setup_cleanup_traps (before syncs)"
+        echo "  2. clear_cleanup_traps (before shell)"
         echo ""
-        echo "Current cmd_run section:"
-        echo "$cmd_run_section" | grep -A15 "Mutagen syncs started successfully"
+        echo "Found setup: $has_setup"
+        echo "Found clear: $has_clear"
+        echo ""
+        echo "Current mutagen section:"
+        echo "$cmd_run_section" | grep -A20 "For mutagen: start container"
         return 1
     fi
 }
@@ -464,4 +479,31 @@ STUB
 
     trap_output=$(trap -p EXIT)
     [ -z "$trap_output" ] || [[ "$trap_output" != *"cleanup_on_interrupt"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# INTEGRATION TEST: Mutagen mode persistence behavior
+# ---------------------------------------------------------------------------
+
+@test "cmd_run mutagen: normal exit leaves container running" {
+    skip "Integration test - requires manual verification"
+
+    # This validates the persistence behavior:
+    # 1. Start jailed: ./jailed run .
+    # 2. Exit normally: type 'exit'
+    # 3. Verify container running: podman ps (should show container)
+    # 4. Verify sync active: mutagen sync list (should show session)
+    # 5. Verify state exists: cat ~/.config/jailed/running.json
+    # 6. Reconnect works: ./jailed shell
+}
+
+@test "cmd_run mutagen: Ctrl+C during sync cleans up" {
+    skip "Integration test - requires manual verification"
+
+    # This validates cleanup on interrupt:
+    # 1. Start jailed: ./jailed run .
+    # 2. Press Ctrl+C during startup
+    # 3. Verify no container: podman ps (should be empty)
+    # 4. Verify no sync: mutagen sync list (should be empty)
+    # 5. Verify no state: ~/.config/jailed/running.json (should not exist)
 }

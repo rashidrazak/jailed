@@ -271,6 +271,30 @@ jailed --runtime podman --sync bind --testcontainers /path/to/project
 
 ---
 
+## Container Lifecycle
+
+Jailed uses persistent containers for fast reconnection:
+
+```bash
+# Start container
+./jailed .
+
+# Work in container...
+exit  # Container stays running
+
+# Reconnect instantly
+./jailed shell
+
+# When done, cleanup
+./jailed stop
+```
+
+**Automatic Cleanup**: Press Ctrl+C during startup to cleanup immediately.
+
+**Bind Mode**: Using `--sync bind` provides traditional behavior where the container stops automatically when you exit the shell. With the default mutagen mode, containers persist for fast reconnection.
+
+---
+
 ## AI Agents
 
 All agents are pre-installed in the container image. No AI tools need to be installed on the host.

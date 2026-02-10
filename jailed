@@ -1028,14 +1028,21 @@ jailed - Secure AI coding assistant container
 
 Usage:
   jailed [path...]                    Start container with one or more projects
+  jailed shell [project-name]         Reconnect to running container shell
   jailed attach <path>                Attach project to running container (mutagen only)
   jailed detach <project-name>        Detach project and remove files from container
-  jailed shell [project-name]         Reconnect to running container shell
   jailed stop                         Stop container and clean up all resources
   jailed ls                           List running container and attached projects
   jailed build [--name USER]          Build/rebuild the container image
   jailed version                      Show version
   jailed help                         Show this help
+
+Container Lifecycle:
+  When you exit the shell (Ctrl+D or 'exit'), the container stays running.
+
+  - Reconnect:  jailed shell
+  - Stop:       jailed stop
+  - Interrupt:  Ctrl+C cleans up automatically
 
 Options:
   --runtime <docker|podman>    Container runtime (default: auto-detect)

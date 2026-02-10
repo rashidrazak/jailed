@@ -723,8 +723,12 @@ cmd_run() {
 
             # Run with bind mounts (interactive)
             # Bind mode: container runs in foreground with --rm flag, auto-cleanup
-            # No persistence needed since --rm handles cleanup
-            "$RUNTIME" "${run_args[@]}" "$IMAGE_NAME"
+            # Setup trap to cleanup state on interrupt (container auto-removed by --rm)
+            trap 'delete_state_file 2>/dev/null || true; '"$RUNTIME"' stop '"$container_name"' 2>/dev/null || true; kill $runtime_pid 2>/dev/null || true; exit 130' INT TERM
+            "$RUNTIME" "${run_args[@]}" "$IMAGE_NAME" &
+            runtime_pid=$!
+            wait $runtime_pid || true
+            trap - INT TERM
 
             # After container stops (--rm auto-removed it), just cleanup state
             delete_state_file
@@ -750,7 +754,12 @@ cmd_run() {
         # Bind mode uses --rm flag so container auto-cleans on exit
         write_state_file "$container_name" projects_map
 
-        "$RUNTIME" "${run_args[@]}" "$IMAGE_NAME"
+        # Setup trap to cleanup state on interrupt (container auto-removed by --rm)
+        trap 'delete_state_file 2>/dev/null || true; '"$RUNTIME"' stop '"$container_name"' 2>/dev/null || true; kill $runtime_pid 2>/dev/null || true; exit 130' INT TERM
+        "$RUNTIME" "${run_args[@]}" "$IMAGE_NAME" &
+        runtime_pid=$!
+        wait $runtime_pid || true
+        trap - INT TERM
 
         # Container stopped and removed by --rm, just cleanup state
         delete_state_file

@@ -287,6 +287,108 @@ STUB
 }
 
 # ---------------------------------------------------------------------------
+# UNIT TEST: Directory pre-creation before mutagen sync
+# ---------------------------------------------------------------------------
+
+@test "cmd_run mutagen: creates workspace directories before starting syncs" {
+    # Validates fix for empty /workspace bug
+    #
+    # CORRECT order:
+    #   1. Container starts with sleep infinity
+    #   2. Directories created: mkdir -p /workspace/<name>
+    #   3. Ownership set: chown user:user /workspace/<name>
+    #   4. Mutagen syncs start: mutagen sync create
+    #
+    # WRONG order (bug):
+    #   1. Container starts
+    #   2. Mutagen syncs start → FAIL (target doesn't exist)
+
+    local cleanup_log="${JAILED_CONFIG_DIR}/cleanup.log"
+
+    # Stub that tracks exec calls (for mkdir/chown)
+    cat > "${STUB_BIN_DIR}/podman" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+    run)
+        echo "container-id-12345"
+        exit 0
+        ;;
+    exec)
+        # Track mkdir and chown calls
+        if [[ "$*" == *"mkdir -p /workspace/"* ]]; then
+            echo "MKDIR_CALLED" >> "$CLEANUP_LOG"
+        fi
+        if [[ "$*" == *"chown"* ]] && [[ "$*" == *"/workspace/"* ]]; then
+            echo "CHOWN_CALLED" >> "$CLEANUP_LOG"
+        fi
+        exit 0
+        ;;
+    inspect|image)
+        exit 0
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+STUB
+    chmod +x "${STUB_BIN_DIR}/podman"
+    export CLEANUP_LOG="$cleanup_log"
+
+    setup_tracked_mutagen "$cleanup_log"
+
+    source "${JAILED_DIR}/jailed"
+
+    export JAILED_RUNTIME="podman"
+    export SYNC_STRATEGY="mutagen"
+    export USERNAME="coder"
+
+    # Read the mutagen mode section
+    local mutagen_section
+    mutagen_section=$(sed -n '/# For mutagen: start container detached/,/exec -it.*gosu.*zsh/p' "${JAILED_DIR}/jailed")
+
+    # Verify directory creation happens before sync
+    # Look for pattern: mkdir -p /workspace before mutagen sync create
+
+    # Extract line numbers
+    local mkdir_line sync_line
+    mkdir_line=$(echo "$mutagen_section" | grep -n 'mkdir -p "/workspace' | head -1 | cut -d: -f1)
+    sync_line=$(echo "$mutagen_section" | grep -n '# Start mutagen sync' | head -1 | cut -d: -f1)
+
+    if [ -z "$mkdir_line" ]; then
+        echo "ERROR: Missing directory creation (mkdir -p) in mutagen mode"
+        echo ""
+        echo "Expected pattern:"
+        echo '  mkdir -p "/workspace/$name"'
+        echo '  chown "$USERNAME:$USERNAME" "/workspace/$name"'
+        echo ""
+        echo "Before mutagen sync starts"
+        return 1
+    fi
+
+    if [ -z "$sync_line" ]; then
+        echo "ERROR: Missing mutagen sync start comment"
+        return 1
+    fi
+
+    # Verify mkdir comes BEFORE sync
+    if [ "$mkdir_line" -ge "$sync_line" ]; then
+        echo "ERROR: Directory creation must happen BEFORE mutagen sync"
+        echo "  mkdir at line: $mkdir_line"
+        echo "  sync at line: $sync_line"
+        echo ""
+        echo "Current section:"
+        echo "$mutagen_section" | head -30
+        return 1
+    fi
+
+    # Verify chown also present
+    if ! echo "$mutagen_section" | grep -q 'chown.*"/workspace'; then
+        echo "ERROR: Missing chown for /workspace directories"
+        return 1
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # INTEGRATION TEST: Full lifecycle (run -> exit -> no orphans)
 # ---------------------------------------------------------------------------
 

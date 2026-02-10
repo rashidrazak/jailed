@@ -653,6 +653,16 @@ cmd_run() {
         export CONTAINER_NAME="$container_name"
         setup_cleanup_traps
 
+        # Create workspace directories for each project before starting mutagen syncs
+        # (Mutagen needs the target directory to exist inside the container)
+        for entry in "${project_entries[@]}"; do
+            local name="${entry%%=*}"
+            "$RUNTIME" exec "$container_name" mkdir -p "/workspace/$name" \
+                || die "Failed to create /workspace/$name in container"
+            "$RUNTIME" exec "$container_name" chown "$USERNAME:$USERNAME" "/workspace/$name" \
+                || die "Failed to set ownership on /workspace/$name"
+        done
+
         # Start mutagen sync for each project
         local mutagen_failed=false
         for entry in "${project_entries[@]}"; do

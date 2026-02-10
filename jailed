@@ -496,7 +496,7 @@ build_run_args() {
         fi
     fi
 
-    _args+=("$IMAGE_NAME")
+    # Note: $IMAGE_NAME is NOT added here - it's added by cmd_run() after project mounts
 }
 
 # --- Dedupe project names ---
@@ -646,7 +646,7 @@ cmd_run() {
     # Start container
     if [ "$SYNC_STRATEGY" = "mutagen" ]; then
         # For mutagen: start container detached (-d), start syncs, write state, then attach
-        "$RUNTIME" "${run_args[@]}" sleep infinity
+        "$RUNTIME" "${run_args[@]}" "$IMAGE_NAME" sleep infinity
 
         # Set cleanup traps before starting syncs (protects against interrupts during setup)
         # These will be cleared after successful shell attach to allow persistence
@@ -722,12 +722,12 @@ cmd_run() {
             fi
 
             # Run with bind mounts (interactive)
-            # Phase 2: Clear trap before shell (container persists)
-            clear_cleanup_traps
-            "$RUNTIME" "${run_args[@]}"
+            # Bind mode: container runs in foreground with --rm flag, auto-cleanup
+            # No persistence needed since --rm handles cleanup
+            "$RUNTIME" "${run_args[@]}" "$IMAGE_NAME"
 
-            # Shell exited - container still running
-            info "Container still running. Use 'jailed shell' to reconnect or 'jailed stop' to shut down."
+            # After container stops (--rm auto-removed it), just cleanup state
+            delete_state_file
         else
             # Mutagen syncs started successfully
             # Write state file
@@ -747,14 +747,13 @@ cmd_run() {
         fi
     else
         # For bind mount: write state, run directly (interactive)
+        # Bind mode uses --rm flag so container auto-cleans on exit
         write_state_file "$container_name" projects_map
 
-        # Phase 2: No trap - container persists after shell exit
-        clear_cleanup_traps
-        "$RUNTIME" "${run_args[@]}"
+        "$RUNTIME" "${run_args[@]}" "$IMAGE_NAME"
 
-        # Shell exited - container still running
-        info "Container still running. Use 'jailed shell' to reconnect or 'jailed stop' to shut down."
+        # Container stopped and removed by --rm, just cleanup state
+        delete_state_file
     fi
 }
 

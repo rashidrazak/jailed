@@ -411,3 +411,57 @@ STUB
         return 1
     fi
 }
+
+# ---------------------------------------------------------------------------
+# UNIT TEST: Trap setup and clear helpers
+# ---------------------------------------------------------------------------
+
+@test "setup_cleanup_traps: sets up signal handlers" {
+    source "${JAILED_DIR}/jailed"
+
+    export CONTAINER_NAME="test-container-456"
+
+    # Setup traps
+    setup_cleanup_traps
+
+    # Verify trap is set (check trap output contains cleanup function)
+    local trap_output
+    trap_output=$(trap -p INT)
+    [[ "$trap_output" == *"cleanup_on_interrupt"* ]]
+
+    trap_output=$(trap -p TERM)
+    [[ "$trap_output" == *"cleanup_on_interrupt"* ]]
+
+    trap_output=$(trap -p ERR)
+    [[ "$trap_output" == *"cleanup_on_interrupt"* ]]
+}
+
+@test "clear_cleanup_traps: removes all signal handlers" {
+    source "${JAILED_DIR}/jailed"
+
+    export CONTAINER_NAME="test-container-789"
+
+    # First setup traps
+    setup_cleanup_traps
+
+    # Verify traps are set
+    local trap_output
+    trap_output=$(trap -p INT)
+    [[ "$trap_output" == *"cleanup_on_interrupt"* ]]
+
+    # Now clear them
+    clear_cleanup_traps
+
+    # Verify traps are cleared
+    trap_output=$(trap -p INT)
+    [ -z "$trap_output" ] || [[ "$trap_output" != *"cleanup_on_interrupt"* ]]
+
+    trap_output=$(trap -p TERM)
+    [ -z "$trap_output" ] || [[ "$trap_output" != *"cleanup_on_interrupt"* ]]
+
+    trap_output=$(trap -p ERR)
+    [ -z "$trap_output" ] || [[ "$trap_output" != *"cleanup_on_interrupt"* ]]
+
+    trap_output=$(trap -p EXIT)
+    [ -z "$trap_output" ] || [[ "$trap_output" != *"cleanup_on_interrupt"* ]]
+}

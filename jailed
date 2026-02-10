@@ -396,6 +396,21 @@ cleanup_on_interrupt() {
     exit $exit_code
 }
 
+# --- Setup cleanup traps for interrupts ---
+# Sets up signal handlers to catch interrupts and cleanup properly
+# Call this before any operation that needs cleanup protection
+setup_cleanup_traps() {
+    # Set handlers for interrupt signals
+    trap 'cleanup_on_interrupt' INT TERM ERR
+}
+
+# --- Clear cleanup traps ---
+# Removes signal handlers after operation completes successfully
+# Call this when transitioning to persistent state
+clear_cleanup_traps() {
+    trap - INT TERM ERR EXIT
+}
+
 # --- Build container run arguments ---
 build_run_args() {
     local container_name="$1"

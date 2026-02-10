@@ -388,7 +388,7 @@ cleanup_on_interrupt() {
     # Cleanup in reverse order of creation
     if [ -n "${CONTAINER_NAME:-}" ]; then
         stop_all_mutagen_syncs "$CONTAINER_NAME" 2>/dev/null || true
-        "$RUNTIME" stop "$CONTAINER_NAME" 2>/dev/null || true
+        "${RUNTIME:-docker}" stop "$CONTAINER_NAME" 2>/dev/null || true
     fi
 
     delete_state_file 2>/dev/null || true
